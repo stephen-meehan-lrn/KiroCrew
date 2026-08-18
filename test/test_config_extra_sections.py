@@ -11,23 +11,60 @@ from __future__ import annotations
 import json
 
 from kiro_crew.config import loader as L
-from kiro_crew.config.loader import _KNOWN_CONFIG_SECTIONS, KiroCrewConfig
+from kiro_crew.config.loader import (
+    _KNOWN_CONFIG_SECTIONS,
+    _SECTIONS_OWNED_ELSEWHERE,
+    KiroCrewConfig,
+)
 
 
 def test_known_sections_equals_emitted_sections():
-    """INVARIANT: _KNOWN_CONFIG_SECTIONS must equal the keys to_dict() emits.
+    """INVARIANT: _KNOWN_CONFIG_SECTIONS must equal the keys to_dict() emits, minus
+    the sections another file owns.
 
-    A section in _KNOWN but NOT emitted would be excluded from _extra_sections
-    capture yet dropped by to_dict() (lost on save()). A section emitted but NOT
-    in _KNOWN would be captured as "unknown" and could round-trip a stale copy.
+    A section in _KNOWN but NOT emitted would normally be excluded from
+    _extra_sections capture yet dropped by to_dict() (lost on save()). A section
+    emitted but NOT in _KNOWN would be captured as "unknown" and could round-trip a
+    stale copy.
+
+    ``_SECTIONS_OWNED_ELSEWHERE`` is the deliberate exception: those keys stay KNOWN
+    (so a legacy copy is not captured and re-emitted as an unknown section) while
+    to_dict() does not emit them, because a different file is their source of truth.
+    Nothing is lost on save because nothing in config.json owns them.
     """
     emitted = set(KiroCrewConfig().to_dict().keys())
-    # to_dict() also stamps slack sub-keys / meta at save() time; compare only
-    # the top-level section names it writes from to_dict() itself.
-    assert emitted == set(_KNOWN_CONFIG_SECTIONS), (
+    expected = set(_KNOWN_CONFIG_SECTIONS) - set(_SECTIONS_OWNED_ELSEWHERE)
+    assert emitted == expected, (
         "drift between to_dict() output and _KNOWN_CONFIG_SECTIONS: "
-        f"emitted-only={emitted - set(_KNOWN_CONFIG_SECTIONS)}, "
-        f"known-only={set(_KNOWN_CONFIG_SECTIONS) - emitted}"
+        f"emitted-only={emitted - expected}, known-only={expected - emitted}"
+    )
+
+
+def test_sections_owned_elsewhere_stay_known():
+    """The exception must not become a removal.
+
+    Dropping one of these from _KNOWN_CONFIG_SECTIONS would reclassify a legacy key
+    as an UNKNOWN section, so _extra_sections would capture it and to_dict() would
+    re-emit it — restoring the whole-file rewrite hazard that moving the data out
+    exists to remove, silently and with no test failing.
+    """
+    assert set(_SECTIONS_OWNED_ELSEWHERE) <= set(_KNOWN_CONFIG_SECTIONS), (
+        "a section owned elsewhere fell out of _KNOWN_CONFIG_SECTIONS; it would now "
+        "be captured as unknown and re-emitted by to_dict()"
+    )
+
+
+def test_sections_owned_elsewhere_are_really_not_emitted():
+    """Positive control for the carve-out.
+
+    Without this, the parity test above could be satisfied by an ever-growing
+    exception set that quietly excuses real drift.
+    """
+    emitted = set(KiroCrewConfig().to_dict().keys())
+    leaked = emitted & set(_SECTIONS_OWNED_ELSEWHERE)
+    assert not leaked, (
+        f"to_dict() emits {leaked}, which another file owns; a whole-config write "
+        "would then be able to overwrite or delete that file's data"
     )
 
 

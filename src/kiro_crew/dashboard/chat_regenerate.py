@@ -95,7 +95,13 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
-        task = asyncio.create_task(_run_chat(state, slot, user_msg, regenerate_hint=hint))
+        # operator_authored: `user_msg` is the operator's own stored composer text.
+        # The stored row is PRE-expansion (chat_handlers appends it before the turn
+        # runs), so without this a regenerate would resolve `{{NAME}}` differently
+        # from the send it is repeating.
+        task = asyncio.create_task(
+            _run_chat(state, slot, user_msg, regenerate_hint=hint, operator_authored=True)
+        )
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
@@ -253,7 +259,8 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             resources=slot.key,
         )
 
-        task = asyncio.create_task(_run_chat(state, slot, _bc))
+        # operator_authored: `_bc` is the operator's own edited composer text.
+        task = asyncio.create_task(_run_chat(state, slot, _bc, operator_authored=True))
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)

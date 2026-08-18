@@ -253,7 +253,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             ),
         )
 
-        task = asyncio.create_task(_run_chat(state, slot, redacted_content))
+        # operator_authored: `redacted_content` is the operator's own stored composer
+        # text being replayed from the rewind point.
+        task = asyncio.create_task(_run_chat(state, slot, redacted_content, operator_authored=True))
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
