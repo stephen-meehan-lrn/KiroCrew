@@ -11,6 +11,7 @@
  * `@pierre/diffs` runtime is only reachable through `./PierreImpl`.
  */
 import type { BaseCodeOptions, BaseDiffOptions, HunkSeparators, ThemesType, ThemeTypes } from '@pierre/diffs'
+import type { CodeViewReactOptions } from '@pierre/diffs/react'
 
 /** Diff options as our surfaces use them: the deprecated `custom` hunk
  *  separator (a function renderer) is excluded so the shape stays assignable
@@ -165,3 +166,109 @@ export function pierreFileOptions(overrides?: BaseCodeOptions): BaseCodeOptions 
 export function pierreDiffOptions(overrides?: PierreDiffOptions): PierreDiffOptions {
   return { ...PIERRE_DIFF_DEFAULTS, ...overrides }
 }
+
+/** Options for the multi-file CodeView surface.
+ *
+ *  Pierre's own React type, minus nothing: `CodeViewReactOptions` already drops
+ *  the three members the React binding owns (`controlledSelection`,
+ *  `createEditor`, `onSelectedLinesChange`), and it already narrows
+ *  `hunkSeparators` away from the deprecated `custom` renderer — so unlike
+ *  `PierreDiffOptions` there is nothing left for us to exclude. */
+export type PierreCodeViewOptions = CodeViewReactOptions
+
+/** A hairline above every file header, so the end of one file reads as separate
+ *  from the start of the next.
+ *
+ *  Drawn as an INSET BOX-SHADOW rather than a `border-top`, and that choice is
+ *  load-bearing. In CodeView the header band is not just CSS: `diffHeaderHeight`
+ *  (44px) feeds `computeVirtualFileMetrics`, which is how the virtualizer
+ *  estimates the height of items it has not rendered yet. A border adds a real
+ *  pixel to the measured box, so every un-rendered item would be estimated 1px
+ *  short and the scroll offsets would drift further the more files there are —
+ *  the exact failure `__devOnlyValidateItemHeights` exists to catch. An inset
+ *  shadow paints inside the existing box and changes no geometry.
+ *
+ *  Applied through `unsafeCSS`, which lands in the shadow root under
+ *  `@layer unsafe` and so outranks the library's own `@layer base`. */
+export const PIERRE_CODE_VIEW_DIVIDER_CSS = `
+[data-diffs-header]{box-shadow:inset 0 1px 0 var(--border)}
+`
+
+/** Defaults for CodeView: the same diff look as every other surface, with the
+ *  two things only CodeView can do turned on.
+ *
+ *  `layout` and `itemMetrics` are what make the change set read as ONE continuous
+ *  list rather than a stack of cards. Pierre's own defaults reserve 8px between
+ *  items (`layout.gap`), 8px above the first and below the last
+ *  (`layout.paddingTop`/`paddingBottom`, applied as margins on its item
+ *  container), and a further 8px inside each item below its last code row
+ *  (`itemMetrics.paddingBottom`, which defaults to `spacing`). All four are
+ *  zeroed so consecutive files sit flush and the hairline below is the only
+ *  separator. Note `layout` is read as `options.layout ?? DEFAULT_CODE_VIEW_LAYOUT`
+ *  with NO per-key merge, so all three of its keys have to be given; `itemMetrics`
+ *  does merge per key, so it names only what it changes.
+ *
+ *  Both are the library's declared options rather than CSS overrides, which
+ *  matters: the same numbers feed the virtualizer's height estimates for items it
+ *  has not rendered yet, so styling the spacing away instead would desync the
+ *  scroll offsets.
+ *
+ *  The file header keeps Pierre's stock tone — the same canvas as the code it
+ *  labels. A lighter band was tried to make each file read as a row and reverted:
+ *  the hairline above each header separates them without a second competing tint.
+ *
+ *  `disableFileHeader` flips to false here — and that is not cosmetic. CodeView
+ *  measures the header band into its own layout and pins it while the file
+ *  scrolls; `getStickyHeaderOffset` returns 0 whenever the header is disabled,
+ *  so `stickyHeaders` without it is a silent no-op. The single-file surfaces
+ *  keep the header off because their call sites draw their own chrome, but here
+ *  the header IS the row: it carries the change icon, the path, the +/- counts,
+ *  and the prefix/metadata slots a caller hangs its own affordances on. */
+export const PIERRE_CODE_VIEW_DEFAULTS: PierreCodeViewOptions = {
+  ...PIERRE_DIFF_DEFAULTS,
+  disableFileHeader: false,
+  stickyHeaders: true,
+  layout: { gap: 0, paddingTop: 0, paddingBottom: 0 },
+  itemMetrics: { paddingBottom: 0 },
+  unsafeCSS: PIERRE_CODE_VIEW_DIVIDER_CSS,
+}
+
+/** Merge per-surface overrides over the shared CodeView defaults. */
+export function pierreCodeViewOptions(overrides?: PierreCodeViewOptions): PierreCodeViewOptions {
+  return { ...PIERRE_CODE_VIEW_DEFAULTS, ...overrides }
+}
+
+/** Lucide's `check` glyph as a sprite symbol for the PR change-set tree's
+ *  viewed decoration. Decorations name a symbol rather than taking JSX -- the
+ *  tree renders inside a shadow root where a React node from the host tree
+ *  cannot land -- so the icon ships as sprite markup instead of a
+ *  `lucide-react` component. The path data IS lucide's, so the mark still
+ *  matches every other check in the app.
+ *
+ *  The `<svg>` wrapper is load-bearing: the tree's sprite parser accepts only
+ *  an `<svg>` ROOT (`parseSpriteSheet` does `wrapper.querySelector('svg')`),
+ *  and a bare `<symbol>` string is silently dropped -- no symbol, no visible
+ *  decoration, no error anywhere. */
+export const PR_TREE_VIEWED_ICON = 'pr-viewed-check'
+export const PR_TREE_VIEWED_SPRITE = `<svg xmlns="http://www.w3.org/2000/svg" style="display:none"><symbol id="${PR_TREE_VIEWED_ICON}" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></symbol></svg>`
+
+/** Injected stylesheet for the viewed decoration. The decoration section is
+ *  the row's flexible FILLER in the tree's own CSS (`flex: 1 1 0;
+ *  min-width: 0; overflow: hidden`), so a long filename crushes it to zero
+ *  width at narrow rail widths -- while the git lane survives any width
+ *  because it is `flex: none` with a fixed lane width. A viewed mark is
+ *  review STATE, not a hint, so a row that holds one gets the git lane's
+ *  never-shrink treatment. Scoped with `:has` to the check icon, so rows
+ *  without a mark keep the stock crushable filler; the NAME column is the one
+ *  the tree marks shrinkable, so it still ellipsizes first. The color comes
+ *  from the tree's own palette so every theme that retints the git lanes
+ *  retints the check with them. */
+export const PR_TREE_VIEWED_CSS = `
+[data-item-section="decoration"]:has([data-icon-name="${PR_TREE_VIEWED_ICON}"]),
+[data-item-section="decoration"] > span:has([data-icon-name="${PR_TREE_VIEWED_ICON}"]) {
+  min-width: fit-content;
+}
+[data-item-section="decoration"] [data-icon-name="${PR_TREE_VIEWED_ICON}"] {
+  color: var(--trees-git-added-color);
+}
+`

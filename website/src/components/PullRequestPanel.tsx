@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { withUnifiedPatchHeaders } from './unifiedPatchHeaders'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -7,6 +6,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Circle,
   ExternalLink,
   GitCommitHorizontal,
@@ -23,7 +24,6 @@ import { api } from '../api/client'
 import type {
   PullRequestCheck,
   PullRequestComment,
-  PullRequestFile,
   PullRequestSource,
   PullRequestStatus,
   PullRequestStatusBatch,
@@ -33,7 +33,10 @@ import {
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
 import CopyBranchButton from './CopyBranchButton'
-import { PierrePatch } from '../pierre'
+import { PierreCodeView, type PierreCodeViewScrollHandle } from '../pierre'
+import { PierrePrTree } from '../pierre/tree'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { usePointerDrag } from '../hooks/usePointerDrag'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import { timeAgo } from '../utils/timeAgo'
@@ -383,51 +386,372 @@ function useDeferredMount(delayMs = 140): boolean {
   return ready
 }
 
-function DiffView({ patch, path }: { patch: string; path: string }) {
-  const ready = useDeferredMount()
-  // The provider hands back a per-file patch body: hunks only, with no
-  // `diff --git` / `---` / `+++` headers. Pierre identifies a file from those
-  // headers, so synthesize them around the body.
-  const filePatch = useMemo(
-    () => withUnifiedPatchHeaders(path, patch),
-    [patch, path],
-  )
-  // ChangeRow already draws the file header (path, status, +/- counts), so the
-  // shared default (header off) is what we want; wrap because the drawer column
-  // is narrow.
-  const options = useMemo(() => ({ overflow: 'wrap' as const }), [])
-  if (!ready) return <div className="px-3 py-3 text-[11px] text-muted">{i18nT('components.pullRequestPanel.loading_diff')}</div>
+/** The pull request's title as it appears in a condensed bar: truncated, with the
+ *  full string on hover, and an optional dot divider when something follows it.
+ *
+ *  Shared so the Changes toolbar and the other tabs' condensed bar cannot drift in
+ *  styling. `min-w-0` is load-bearing on both spans — a grid item defaults to
+ *  `min-width: auto` and refuses to shrink below min-content, which would defeat
+ *  the truncation on a long title in a narrow panel. */
+function CondensedTitle({ title, divider }: { title: string; divider?: boolean }) {
   return (
-    <div className="pierre-surface" data-testid="pr-diff-surface">
-      <PierrePatch patch={filePatch} options={options} />
-    </div>
+    <span className="min-w-0 flex items-center gap-2">
+      <span className="min-w-0 truncate font-medium text-text" title={title}>{title}</span>
+      {divider && <span aria-hidden="true" className="shrink-0 w-1 h-1 rounded-full bg-muted" />}
+    </span>
   )
 }
 
-function ChangeRow({ file }: { file: PullRequestFile }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="border-b border-border last:border-b-0">
+/** No file collapsed. Module-level so the initial state is referentially stable
+ *  and the items memo does not rebuild on every render. */
+const NO_COLLAPSED_PATHS: ReadonlySet<string> = new Set<string>()
+
+/** Change-set tree rail width bounds; the grip clamps between them. Narrower
+ *  than the Files tab's (300/520) because a change-set tree holds dozens of
+ *  paths, not a workspace — but persisted and dragged the same way. */
+const PR_TREE_MIN_W = 200
+const PR_TREE_MAX_W = 480
+const PR_TREE_W_KEY = 'mc-pr-tree-w'
+/** The tab width below which the tree yields. The rail's own minimum plus a
+ *  readable unified diff column — below this, both would be unusable, so the
+ *  diff (the surface being reviewed) wins the whole width. */
+const PR_TREE_AUTO_HIDE_BELOW = 620
+
+/** Scroll offset past which the Changes tab condenses the pull request's chrome.
+ *  Below it the chrome is always shown, so a short change set that barely scrolls
+ *  never loses its title, and returning to the top always brings it back.
+ *  Just UNDER one file-header band (44px): a patchless file (binary, or over the
+ *  provider's size ceiling) is header-only, so any threshold of a header or more
+ *  lets a reader scroll entirely past one or two of them with the chrome still
+ *  parked — condensing must fire by the time the FIRST header has left. */
+const CHROME_CONDENSE_AT = 40
+
+/**
+ * The Changes tab: every file of the pull request in ONE Pierre CodeView.
+ *
+ * There are no rows of our own here. Each file's row IS Pierre's stock file
+ * header — change icon, path, +/- counts — which CodeView measures into its
+ * layout and pins while that file scrolls, and which stays legible because
+ * CodeView virtualizes across files as well as within them. The panel supplies
+ * exactly two things, through the header slots the library provides for it: the
+ * collapse toggle (prefix) and the provider facts the header cannot know
+ * (metadata).
+ *
+ * CodeView owns the scroll element, so the files-changed bar sits OUTSIDE it as a
+ * shrink-0 row and the tabpanel must not scroll for this tab. `onScroll` is
+ * forwarded up because the library owns that element: it is the panel's only
+ * signal that the reader has moved into the change set, which is what condenses
+ * the chrome above — and `condensed` comes back down so this row can take over
+ * showing the pull request's title while that chrome is gone.
+ */
+function ChangesTab({ source, condensed, onScroll, collapsedPaths, setCollapsedPaths, viewedPaths, setViewedPaths }: {
+  source: PullRequestSource
+  /** Whether the panel's chrome above is collapsed, so this row shows the title. */
+  condensed?: boolean
+  /** CodeView's scroll offset, forwarded to the panel's chrome-condensing. */
+  onScroll?: (scrollTop: number) => void
+  /** Review progress, OWNED BY THE PANEL rather than this tab: the tabpanel is
+   *  `key={tab}`, so tab-local state dies on an ordinary tab switch — a reviewer
+   *  15 files in who flips to Description and back would lose every mark. The
+   *  panel resets both sets when the pull request changes. */
+  collapsedPaths: ReadonlySet<string>
+  setCollapsedPaths: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>
+  viewedPaths: ReadonlySet<string>
+  setViewedPaths: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>
+}) {
+  const ready = useDeferredMount()
+  /** Tree visibility is the TAB'S WIDTH, not a toggle: the tree shows whenever
+   *  there is room for it beside a readable diff and yields when there is not.
+   *  Seeded from a mount measurement (an observer's first callback lands a
+   *  frame late, which would flash the tree into a too-narrow panel), then
+   *  tracked live so panel drags and window resizes settle it continuously. */
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [treeFits, setTreeFits] = useState(false)
+  useLayoutEffect(() => {
+    const el = rootRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    setTreeFits(el.getBoundingClientRect().width >= PR_TREE_AUTO_HIDE_BELOW)
+    const ro = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width
+      if (width !== undefined) setTreeFits(width >= PR_TREE_AUTO_HIDE_BELOW)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  /** The file at the top of the diff viewport, reported by CodeView's scroll —
+   *  the tree echoes it as its selection so it follows the reader. */
+  const [viewportPath, setViewportPath] = useState<string | null>(null)
+  const codeViewRef = useRef<PierreCodeViewScrollHandle>(null)
+
+  /* Tree rail width: same drag mechanics as the Files tab rail (grip on the
+     rail's LEFT edge, so dragging left grows it; clamped; persisted on end). */
+  const [treeW, setTreeW] = useState(() => {
+    const v = parseInt(safeGetItem(PR_TREE_W_KEY) || '', 10)
+    return Number.isFinite(v) ? Math.min(PR_TREE_MAX_W, Math.max(PR_TREE_MIN_W, v)) : PR_TREE_MIN_W
+  })
+  const startWRef = useRef(0)
+  const latestWRef = useRef(treeW)
+  latestWRef.current = treeW
+  const grip = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      startWRef.current = latestWRef.current
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'col-resize'
+    },
+    onMove: ({ dx }) => {
+      setTreeW(Math.min(PR_TREE_MAX_W, Math.max(PR_TREE_MIN_W, startWRef.current - dx)))
+    },
+    onEnd: () => {
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      safeSetItem(PR_TREE_W_KEY, String(latestWRef.current))
+    },
+  })
+  // Safety: restore body styles if unmounted mid-drag.
+  useEffect(() => () => {
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+  }, [])
+
+  const files = useMemo(
+    () => source.files.map(file => ({
+      path: file.path,
+      patch: file.patch,
+      status: file.status,
+      collapsed: collapsedPaths.has(file.path),
+    })),
+    [source.files, collapsedPaths],
+  )
+  const byPath = useMemo(
+    () => new Map(source.files.map(file => [file.path, file])),
+    [source.files],
+  )
+  const totals = useMemo(() => ({
+    additions: source.files.reduce((sum, file) => sum + file.additions, 0),
+    deletions: source.files.reduce((sum, file) => sum + file.deletions, 0),
+  }), [source.files])
+
+  const toggle = useCallback((path: string) => {
+    setCollapsedPaths(current => {
+      const next = new Set(current)
+      if (!next.delete(path)) next.add(path)
+      return next
+    })
+  }, [setCollapsedPaths])
+
+  /** Whether every file in the change set is currently collapsed — what decides
+   *  which direction the bulk control points. Read off `source.files` rather than
+   *  the set's size, so a path left behind by a previous change set cannot make a
+   *  partly-expanded list look fully collapsed. */
+  const allCollapsed = source.files.every(file => collapsedPaths.has(file.path))
+
+  const toggleAll = useCallback(() => {
+    // The direction is derived INSIDE the updater rather than closed over, so two
+    // clicks batched into one render cannot both read the same stale state and
+    // leave the list in the direction the user only asked for once.
+    setCollapsedPaths(current => (
+      source.files.every(file => current.has(file.path))
+        ? NO_COLLAPSED_PATHS
+        : new Set(source.files.map(file => file.path))
+    ))
+  }, [source.files, setCollapsedPaths])
+
+  const renderHeaderPrefix = useCallback((path: string) => {
+    const collapsed = collapsedPaths.has(path)
+    const label = collapsed
+      ? i18nT('components.pullRequestPanel.expand_file')
+      : i18nT('components.pullRequestPanel.collapse_file')
+    return (
       <Btn
         type="button"
-        onClick={() => setOpen(value => !value)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 bg-transparent border-none text-left cursor-pointer hover:bg-bg-hover transition-colors"
-        aria-expanded={open}
+        onClick={() => toggle(path)}
+        aria-expanded={!collapsed}
+        aria-label={label}
+        title={label}
+        className="flex items-center justify-center p-0.5 rounded border-none bg-transparent text-muted hover:text-text cursor-pointer"
       >
-        {open ? <ChevronDown className="lucide-inline shrink-0 text-muted" /> : <ChevronRight className="lucide-inline shrink-0 text-muted" />}
-        <span className="text-[13px] text-text truncate min-w-0 flex-1">{file.path}</span>
-        <span className="text-[11px] text-muted capitalize shrink-0">{file.status}</span>
-        <span className="text-[11px] shrink-0"><span className="text-ok">+{file.additions}</span> <span className="text-danger">-{file.deletions}</span></span>
+        {collapsed
+          ? <ChevronRight className="lucide-inline" aria-hidden="true" />
+          : <ChevronDown className="lucide-inline" aria-hidden="true" />}
       </Btn>
-      {open && (
-        <div className="border-t border-border">
-          {file.patch ? (
-            <DiffView patch={file.patch} path={file.path} />
-          ) : (
-            <div className="px-3 py-4 text-[12px] text-muted">{i18nT('components.pullRequestPanel.the_provider_did_not_return_a_patch_for_this_fil')}</div>
-          )}
-        </div>
-      )}
+    )
+  }, [collapsedPaths, toggle])
+
+  /* Viewed and collapsed are coupled in BOTH directions: marking a file viewed
+     collapses it (its job in this review is done, get it out of the way), and
+     unmarking expands it (you unmark to look again). Both sets update in one
+     handler so a single click cannot leave them disagreeing. */
+  const toggleViewed = useCallback((path: string) => {
+    const nowViewed = !viewedPaths.has(path)
+    setViewedPaths(current => {
+      const next = new Set(current)
+      if (nowViewed) next.add(path); else next.delete(path)
+      return next
+    })
+    setCollapsedPaths(current => {
+      if (nowViewed ? current.has(path) : !current.has(path)) return current
+      const next = new Set(current)
+      if (nowViewed) next.add(path); else next.delete(path)
+      return next
+    })
+  }, [viewedPaths, setViewedPaths, setCollapsedPaths])
+
+  /* A tree click is "take me to this file", and a collapsed file has nothing
+     to be taken to — so the click expands it as part of the navigation. The
+     scroll target is the item's START, whose offset only depends on the items
+     ABOVE it, so expanding the destination cannot move where the scroll lands. */
+  const scrollToFile = useCallback((path: string) => {
+    setCollapsedPaths(current => {
+      if (!current.has(path)) return current
+      const next = new Set(current)
+      next.delete(path)
+      return next
+    })
+    codeViewRef.current?.scrollToFile(path)
+  }, [setCollapsedPaths])
+
+  // Pierre's own header already says everything it can: the change-type icon
+  // covers added / removed / modified, and the +/- counts come from the parsed
+  // hunks. This slot adds the two things the library cannot know: the warning
+  // for a file whose patch the provider withheld (its `+0 −0` is arithmetic
+  // over zero hunks, not a measurement), and the reader's own viewed mark —
+  // rightmost, because the slot is the header's right corner.
+  const renderHeaderMetadata = useCallback((path: string) => {
+    const viewed = viewedPaths.has(path)
+    const label = i18nT('components.pullRequestPanel.mark_as_viewed')
+    return (
+      <span className="flex items-center gap-1.5 ml-1.5">
+        {!byPath.get(path)?.patch && (
+          <span
+            className="text-[11px] text-muted"
+            title={i18nT('components.pullRequestPanel.the_provider_did_not_return_a_patch_for_this_fil')}
+          >
+            {i18nT('components.pullRequestPanel.no_patch')}
+          </span>
+        )}
+        <Btn
+          type="button"
+          onClick={() => toggleViewed(path)}
+          aria-pressed={viewed}
+          aria-label={label}
+          title={viewed ? i18nT('components.pullRequestPanel.viewed') : label}
+          className={`flex items-center justify-center p-0.5 rounded border-none bg-transparent cursor-pointer ${viewed ? 'text-accent' : 'text-muted hover:text-text'}`}
+        >
+          <Check className="lucide-inline" aria-hidden="true" />
+        </Btn>
+      </span>
+    )
+  }, [byPath, viewedPaths, toggleViewed])
+
+  if (!source.files.length) return <EmptyTab>{i18nT('components.pullRequestPanel.no_changed_files_were_returned')}</EmptyTab>
+
+  return (
+    <div ref={rootRef} className="flex flex-col h-full min-h-0">
+      {/* The review toolbar. It lifts to the elevated surface WHILE CONDENSED,
+          which is exactly when it needs to: with the chrome above gone it sits
+          directly on top of a pinned file header, and both would otherwise be the
+          same canvas tone — so the row that names the pull request would read as
+          just another file row. Expanded, there is chrome between them and the
+          plain canvas is right. `transition-colors` carries it at the same
+          duration as the collapse itself. */}
+      <div className={`shrink-0 flex flex-wrap items-center gap-2 px-3 py-2 border-b border-border text-[12px] transition-colors duration-200 motion-reduce:transition-none ${condensed ? 'bg-bg-elevated' : 'bg-bg'}`}>
+        {/* The pull request's title, revealed at the FRONT of this row while the
+            chrome above it is collapsed, so what you are reviewing never goes
+            fully nameless. Animated with the same grid trick as the vertical
+            collapse but on the COLUMN axis, so it opens from zero width rather
+            than popping in — and `min-w-0` is needed on BOTH spans: a grid item
+            defaults to `min-width: auto`, which refuses to shrink below
+            min-content and would defeat the truncation on a long title in a
+            narrow panel.
+
+            `marginRight` is animated alongside the column because the row's
+            `gap-2` applies even to a zero-width item: at rest the collapsed span
+            would still push an 8px indent in front of "N files changed", so the
+            negative margin cancels the gap while closed and is interpolated away
+            as the title opens.
+
+            The WRAPPER stays mounted (it is what animates) but the TEXT is
+            conditional, because the chrome above renders the same title: keeping
+            both mounted put it in the document twice, which reads it twice to a
+            screen reader and makes every by-text query for it ambiguous. The text
+            mounts in the same commit that opens the column, so it is present for
+            the whole reveal; the trade is that collapsing closes an already-empty
+            gap rather than sliding the text back out. */}
+        <span
+          className="min-w-0 grid transition-[grid-template-columns,opacity,margin-right] duration-200 ease-in-out motion-reduce:transition-none"
+          style={{
+            gridTemplateColumns: condensed ? '1fr' : '0fr',
+            opacity: condensed ? 1 : 0,
+            marginRight: condensed ? 0 : '-0.5rem',
+          }}
+        >
+          {condensed && <CondensedTitle title={source.title} divider />}
+        </span>
+        <span className="shrink-0 font-medium text-text">{i18nT('components.pullRequestPanel.files_changed', { count: source.files.length })}</span>
+        <span className="shrink-0 text-ok">+{totals.additions}</span>
+        <span className="shrink-0 text-danger">-{totals.deletions}</span>
+        {/* One click to get the whole change set out of the way. Gated on a set
+            that actually stacks: on a single file the header's own chevron is the
+            same gesture, so a second control would be noise. */}
+        {source.files.length > 1 && (
+          <Btn
+            type="button"
+            onClick={toggleAll}
+            className="ml-auto shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-md border-none bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer transition-colors"
+          >
+            {allCollapsed
+              ? <><ChevronsUpDown className="lucide-inline" aria-hidden="true" /> {i18nT('components.pullRequestPanel.expand_all_files')}</>
+              : <><ChevronsDownUp className="lucide-inline" aria-hidden="true" /> {i18nT('components.pullRequestPanel.collapse_all_files')}</>}
+          </Btn>
+        )}
+      </div>
+      <div className="flex-1 min-h-0 flex">
+        {ready ? (
+          <PierreCodeView
+            ref={codeViewRef}
+            files={files}
+            /* The clip-path shaves the top pixel of the scroll box: every file
+               header carries a 1px hairline divider (inset box-shadow), and
+               when a header pins at the scroller's top edge that line has
+               nothing to divide — it reads as a sliver of the previous file
+               left above the header. Clipping the edge hides it exactly there
+               while every in-flow divider below stays visible. */
+            className="flex-1 min-h-0 overflow-y-auto pierre-surface [clip-path:inset(1px_0_0_0)]"
+            onScroll={onScroll}
+            onViewportFileChange={setViewportPath}
+            renderHeaderPrefix={renderHeaderPrefix}
+            renderHeaderMetadata={renderHeaderMetadata}
+          />
+        ) : (
+          <div className="flex-1 px-3 py-3 text-[11px] text-muted">{i18nT('components.pullRequestPanel.loading_diff')}</div>
+        )}
+        {/* The tree rail — on the RIGHT, where the Files tab keeps its browser
+            rail, with the same grip mechanics. Not a toggle: it is present
+            whenever the tab is wide enough for it beside a readable diff (see
+            `treeFits`). CodeView must stay the ONLY scroller for the diff, so
+            the rail is a sibling flex column with its own overflow, never a
+            wrapper. */}
+        {treeFits && (
+          <>
+            <div
+              {...grip}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={i18nT('pages.chat.fileBrowserRail.resize')}
+              className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors"
+            />
+            <div style={{ width: treeW }} className="shrink-0 min-h-0 overflow-y-auto border-l border-border" data-pr-tree>
+              <PierrePrTree
+                files={files}
+                viewedPaths={viewedPaths}
+                currentPath={viewportPath}
+                onFileClick={scrollToFile}
+              />
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -649,10 +973,10 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
         </Btn>
       )}
       {immediateMergeWarning && !autoMergeMutation.isPending && (
-        <span role="alert" className="text-[11px] text-warn">{immediateMergeWarning}</span>
+        <span role="alert" className="text-[11px] text-muted">{immediateMergeWarning}</span>
       )}
       {confirmAutoMerge && !immediateMergeWarning && !autoMergeMutation.isPending && (
-        <span className="text-[11px] text-warn">
+        <span className="text-[11px] text-muted">
           {isGitHub
             ? i18nT('components.pullRequestPanel.this_authorizes_the_merge_as_soon_as_requirement')
             : i18nT('components.pullRequestPanel.this_authorizes_the_merge_when_the_pipeline_succ')}
@@ -663,26 +987,14 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   )
 }
 
-function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSource; tab: SourceTab; onAddToChat?: (text: string) => void }) {
+/** Every tab except Changes. Changes is handled by the panel itself, because it
+ *  needs the pull request's chrome INSIDE its scroll content — the exclusion is
+ *  in the type so a future tab cannot silently route here and lose that. */
+function PullRequestBody({ source, tab, onAddToChat }: { source: PullRequestSource; tab: Exclude<SourceTab, 'changes'>; onAddToChat?: (text: string) => void }) {
   if (tab === 'description') {
     return source.description
       ? <div className="px-4 py-4 text-[13px]"><MarkdownRenderer content={source.description} /></div>
       : <EmptyTab>{i18nT('components.pullRequestPanel.no_description_was_provided')}</EmptyTab>
-  }
-  if (tab === 'changes') {
-    if (!source.files.length) return <EmptyTab>{i18nT('components.pullRequestPanel.no_changed_files_were_returned')}</EmptyTab>
-    const totalAdds = source.files.reduce((sum, file) => sum + file.additions, 0)
-    const totalDels = source.files.reduce((sum, file) => sum + file.deletions, 0)
-    return (
-      <div>
-        <div className="sticky top-0 z-[1] flex items-center gap-2 px-3 py-2 border-b border-border bg-bg text-[12px]">
-          <span className="font-medium text-text">{i18nT('components.pullRequestPanel.files_changed', { count: source.files.length })}</span>
-          <span className="text-ok">+{totalAdds}</span>
-          <span className="text-danger">-{totalDels}</span>
-        </div>
-        {source.files.map(file => <ChangeRow key={file.path} file={file} />)}
-      </div>
-    )
   }
   if (tab === 'commits') {
     return source.commits.length ? (
@@ -787,6 +1099,36 @@ export default function PullRequestPanel({
   useEffect(() => {
     setTab('changes')
   }, [selected?.url])
+
+  /* Chrome condensing, on EVERY tab: collapsed once the reader is scrolled into
+     the body, restored on the way back up to the top. The scroll comes from a
+     different element per tab — CodeView's own scroller on Changes (the library
+     owns it, so it has to be forwarded out), the tabpanel itself everywhere else —
+     but both feed this one handler, so the behaviour is identical and a tab whose
+     content is too short to scroll simply never condenses.
+
+     Deliberately keyed on POSITION, not scroll direction. A direction-tracking
+     version reads better on paper (reveal on any upward flick, without returning
+     to the top) but CodeView re-anchors its own scroll when previously-unrendered
+     items get measured for real, and those corrections arrive as upward deltas of
+     well over a hundred pixels — indistinguishable from a user scrolling up, so
+     the chrome flapped open mid scroll-down. Position is the one signal that
+     cannot be forged by a correction. */
+  const [condensed, setCondensed] = useState(false)
+  useEffect(() => { setCondensed(false) }, [tab, selected?.url])
+  /* Review progress lives HERE, not in the Changes tab: the tabpanel below is
+     `key={tab}`, so anything tab-local dies on an ordinary tab switch. Reset
+     when the PULL REQUEST changes — never on tab flips. */
+  const [changesCollapsed, setChangesCollapsed] = useState(NO_COLLAPSED_PATHS)
+  const [changesViewed, setChangesViewed] = useState(NO_COLLAPSED_PATHS)
+  useEffect(() => {
+    setChangesCollapsed(NO_COLLAPSED_PATHS)
+    setChangesViewed(NO_COLLAPSED_PATHS)
+  }, [selected?.url])
+  const handleChromeScroll = useCallback((scrollTop: number) => {
+    setCondensed(scrollTop > CHROME_CONDENSE_AT)
+  }, [])
+  const condensedChrome = condensed
 
   const queryKey = useMemo(
     () => ['pull-request-source', selected?.url] as const,
@@ -962,10 +1304,14 @@ export default function PullRequestPanel({
     return merged
   }, [statusQuery.data, source])
 
+  /* Ordered as the reading flow of a review: what is this (Description), what
+     changed (Changes), does it build (Checks), what did people say (Reviews),
+     and the raw history (Commits) last as reference material. The DEFAULT tab
+     stays Changes — the flow describes the strip's order, not where a reviewer
+     spends their time. */
   const tabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
-    { id: 'changes', label: i18nT('components.pullRequestPanel.changes'), count: source.files.length },
     { id: 'description', label: i18nT('components.pullRequestPanel.description') },
-    { id: 'commits', label: i18nT('components.pullRequestPanel.commits'), count: source.commits.length },
+    { id: 'changes', label: i18nT('components.pullRequestPanel.changes'), count: source.files.length },
     {
       id: 'checks',
       label: checksUnavailable
@@ -985,6 +1331,7 @@ export default function PullRequestPanel({
             : '',
     },
     { id: 'reviews', label: i18nT('components.pullRequestPanel.reviews'), count: source.comments.length },
+    { id: 'commits', label: i18nT('components.pullRequestPanel.commits'), count: source.commits.length },
   ] : []
 
   return (
@@ -1038,95 +1385,186 @@ export default function PullRequestPanel({
         </div>
       )}
 
-      {source && (
-        <>
-          <div className="shrink-0 px-4 py-3 border-b border-border">
-            <div className="flex items-center gap-2 text-[11px] text-muted">
-              <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>
-              <span>{source.provider === 'github' ? 'GitHub' : 'GitLab'}</span>
-              {source.headBranch && source.baseBranch && (
-                <span className="min-w-0 flex items-center gap-1 truncate"><CopyBranchButton branch={source.headBranch} /><ArrowRight className="lucide-inline shrink-0" /><span className="truncate">{source.baseBranch}</span></span>
+      {source && (() => {
+        /* The pull request's chrome — identity row, title, actions, merge blocker,
+           partial-results notice, section tabs — collapsed to nothing once the
+           reader scrolls into the change set, and restored on the way back up.
+           `condensedChrome` is only ever true on the Changes tab.
+
+           It COLLAPSES rather than scrolling with the content, and that is forced
+           by the layout: the files-changed bar has to stay pinned BELOW the title,
+           and anything handed to CodeView's own scroll content necessarily renders
+           BELOW that bar instead of above it. A grid row animating 1fr -> 0fr is
+           the repo's existing collapse idiom and keeps every band a real pinned
+           panel row, so nothing competes with Pierre's own pinned file headers. */
+        const chrome = (
+          <div
+            data-pr-chrome=""
+            /* ease-IN-OUT, not ease-out. `ease-out` is cubic-bezier(0,0,0.2,1),
+               which front-loads: measured, it moved 26% of the band in the first
+               frame and then spent the rest of the 200ms animating a near-empty
+               sliver — so collapsing read as an instant snap even though the
+               transition was running the whole time, and expanding only felt
+               smooth because its ARRIVAL was the slow half. A symmetric curve
+               eases both ends of both directions. */
+            className="shrink-0 grid transition-[grid-template-rows] duration-200 ease-in-out motion-reduce:transition-none"
+            style={{ gridTemplateRows: condensedChrome ? '0fr' : '1fr' }}
+            aria-hidden={condensedChrome}
+            /* aria-hidden alone leaves the collapsed controls keyboard-focusable:
+               a sighted keyboard user's focus ring vanishes into the zero-height
+               band while a screen reader says nothing exists. `inert` removes
+               them from the tab order too. React 18 has no inert prop, so the
+               attribute is toggled directly; the inline ref reruns per render,
+               keeping it in step with the collapse. */
+            ref={(el: HTMLDivElement | null) => el?.toggleAttribute('inert', condensedChrome)}
+          >
+            <div className="min-h-0 overflow-hidden">
+              <div className="px-4 py-3 border-b border-border">
+                <div className="flex items-center gap-2 text-[11px] text-muted">
+                  <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>
+                  <span>{i18nT(source.provider === 'github' ? 'components.pullRequestPanel.provider_github' : 'components.pullRequestPanel.provider_gitlab')}</span>
+                  {source.headBranch && source.baseBranch && (
+                    <span className="min-w-0 flex items-center gap-1 truncate"><CopyBranchButton branch={source.headBranch} /><ArrowRight className="lucide-inline shrink-0" /><span className="truncate">{source.baseBranch}</span></span>
+                  )}
+                  <Btn
+                    type="button"
+                    onClick={handleRefresh}
+                    disabled={query.isFetching}
+                    className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                    aria-label={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
+                    title={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
+                  >
+                    <RefreshCw className={`lucide-inline ${query.isFetching ? 'animate-spin' : ''}`} />
+                  </Btn>
+                  {sourceUrl && <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover" aria-label={i18nT('components.pullRequestPanel.open_pull_request')} title={i18nT('components.pullRequestPanel.open_pull_request')}><ExternalLink className="lucide-inline" /></a>}
+                </div>
+                <div className="mt-2 text-[15px] font-semibold text-text-strong leading-snug">{source.title} <span className="font-normal text-muted">{source.provider === 'github' ? '#' : '!'}{source.number}</span></div>
+                <div className="mt-1 flex items-center gap-2 text-[11px] text-muted">
+                  {source.author && <span>{source.author}</span>}
+                  <span><span className="text-ok">+{source.additions}</span> <span className="text-danger">-{source.deletions}</span></span>
+                  {source.updatedAt && <span>{i18nT('components.pullRequestPanel.updated')} {age(source.updatedAt)}</span>}
+                </div>
+                <PullRequestActions key={source.url} source={source} />
+              </div>
+
+              {mergeBlocker && (
+                <div role="alert" className={`flex items-start gap-2 px-4 py-2 border-b border-border text-[11px] text-muted ${mergeBlocker.tone === 'danger' ? 'bg-danger/10' : 'bg-warn/10'}`}>
+                  <GitMerge className={`lucide-inline shrink-0 mt-0.5 ${mergeBlocker.tone === 'danger' ? 'text-danger' : 'text-warn'}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className={`font-medium ${mergeBlocker.tone === 'danger' ? 'text-danger' : 'text-warn'}`}>{mergeBlocker.title}.</span> {mergeBlocker.detail}
+                  </span>
+                  {mergeBlocker.handoff && onAddToChat && (
+                    <Btn
+                      type="button"
+                      onClick={() => onAddToChat(mergeBlocker.handoff!)}
+                      className="text-[11px] shrink-0 px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                    >
+                      {i18nT('components.pullRequestPanel.add_to_chat')}
+                    </Btn>
+                  )}
+                </div>
               )}
-              <Btn
-                type="button"
-                onClick={handleRefresh}
-                disabled={query.isFetching}
-                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
-                aria-label={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
-                title={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
-              >
-                <RefreshCw className={`lucide-inline ${query.isFetching ? 'animate-spin' : ''}`} />
-              </Btn>
-              {sourceUrl && <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover" aria-label={i18nT('components.pullRequestPanel.open_pull_request')} title={i18nT('components.pullRequestPanel.open_pull_request')}><ExternalLink className="lucide-inline" /></a>}
-            </div>
-            <div className="mt-2 text-[15px] font-semibold text-text-strong leading-snug">{source.title} <span className="font-normal text-muted">{source.provider === 'github' ? '#' : '!'}{source.number}</span></div>
-            <div className="mt-1 flex items-center gap-2 text-[11px] text-muted">
-              {source.author && <span>{source.author}</span>}
-              <span><span className="text-ok">+{source.additions}</span> <span className="text-danger">-{source.deletions}</span></span>
-              {source.updatedAt && <span>{i18nT('components.pullRequestPanel.updated')} {age(source.updatedAt)}</span>}
-            </div>
-            <PullRequestActions key={source.url} source={source} />
-          </div>
 
-          {mergeBlocker && (
-            <div role="alert" className={`shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border text-[11px] text-muted ${mergeBlocker.tone === 'danger' ? 'bg-danger/10' : 'bg-warn/10'}`}>
-              <GitMerge className={`lucide-inline shrink-0 mt-0.5 ${mergeBlocker.tone === 'danger' ? 'text-danger' : 'text-warn'}`} />
-              <span className="min-w-0 flex-1">
-                <span className={`font-medium ${mergeBlocker.tone === 'danger' ? 'text-danger' : 'text-warn'}`}>{mergeBlocker.title}.</span> {mergeBlocker.detail}
-              </span>
-              {mergeBlocker.handoff && onAddToChat && (
-                <Btn
-                  type="button"
-                  onClick={() => onAddToChat(mergeBlocker.handoff!)}
-                  className="text-[11px] shrink-0 px-2 py-1 rounded-md border border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-                >
-                  {i18nT('components.pullRequestPanel.add_to_chat')}
-                </Btn>
+              {source.partialSections && source.partialSections.length > 0 && (
+                <div role="status" className="flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
+                  <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
+                  <span>
+                    {source.provider === 'github'
+                      ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: source.partialSections.join(', ') })
+                      : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: source.partialSections.join(', ') })}
+                  </span>
+                </div>
               )}
-            </div>
-          )}
 
-          {source.partialSections && source.partialSections.length > 0 && (
-            <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
-              <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
-              <span>
-                {source.provider === 'github'
-                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: source.partialSections.join(', ') })
-                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: source.partialSections.join(', ') })}
-              </span>
+              <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_request_sections')} className="border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
+                {tabs.map(item => (
+                  <Btn
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    id={`pr-tab-${item.id}`}
+                    aria-selected={tab === item.id}
+                    aria-controls="pr-tabpanel"
+                    onClick={() => setTab(item.id)}
+                    className={`shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-md border-none cursor-pointer text-[11px] transition-colors ${tab === item.id ? 'bg-bg-hover text-text' : `bg-transparent text-muted hover:text-text ${item.tone || ''}`}`}
+                  >
+                    {item.id === 'checks' && checksUnavailable ? (
+                      <AlertCircle className="lucide-inline text-warn" />
+                    ) : item.id === 'checks' && checksRunning ? (
+                      <Loader className="lucide-inline text-warn animate-spin" />
+                    ) : item.id === 'checks' && showAllChecksPassed ? (
+                      <Check className="lucide-inline text-ok" />
+                    ) : null}
+                    {item.label}
+                    {item.count !== undefined && <span className="text-muted">{item.id === 'checks' && checkCounts.total ? `${checkCounts.complete}/${item.count}` : item.count}</span>}
+                  </Btn>
+                ))}
+              </div>
             </div>
-          )}
+          </div>
+        )
 
-          <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_request_sections')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-            {tabs.map(item => (
-              <Btn
-                key={item.id}
-                type="button"
-                role="tab"
-                id={`pr-tab-${item.id}`}
-                aria-selected={tab === item.id}
-                aria-controls="pr-tabpanel"
-                onClick={() => setTab(item.id)}
-                className={`shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-md border-none cursor-pointer text-[11px] transition-colors ${tab === item.id ? 'bg-bg-hover text-text' : `bg-transparent text-muted hover:text-text ${item.tone || ''}`}`}
+        /* The Changes tab hands its scroll container to Pierre's CodeView, which
+           listens for scroll on it and virtualizes against its box, so this
+           wrapper must NOT scroll for that tab — two nested scrollers would leave
+           the sticky file headers pinned to the wrong element. Every other tab
+           scrolls here, and reports its offset to the same handler.
+
+           The tabpanel is keyed by `tab` so switching tabs gives a fresh scroller:
+           React would otherwise reuse the element and carry its `scrollTop` over,
+           leaving the new tab scrolled while the chrome had just been reset to
+           expanded. */
+        return (
+          <>
+            {chrome}
+            {/* On Changes the review toolbar already takes over showing the title
+                while the chrome is gone. The other tabs have no toolbar, so they
+                get this instead: a bar that exists only while condensed, so
+                scrolling a long description or commit list never leaves the panel
+                with nothing naming what you are reading. Same collapse idiom as
+                the chrome, and the same elevated tone the review toolbar uses when
+                it is standing in for the chrome. */}
+            {tab !== 'changes' && (
+              <div
+                className="shrink-0 grid transition-[grid-template-rows] duration-200 ease-in-out motion-reduce:transition-none"
+                style={{ gridTemplateRows: condensedChrome ? '1fr' : '0fr' }}
+                aria-hidden={!condensedChrome}
               >
-                {item.id === 'checks' && checksUnavailable ? (
-                  <AlertCircle className="lucide-inline text-warn" />
-                ) : item.id === 'checks' && checksRunning ? (
-                  <Loader className="lucide-inline text-warn animate-spin" />
-                ) : item.id === 'checks' && showAllChecksPassed ? (
-                  <Check className="lucide-inline text-ok" />
-                ) : null}
-                {item.label}
-                {item.count !== undefined && <span className="text-muted">{item.id === 'checks' && checkCounts.total ? `${checkCounts.complete}/${item.count}` : item.count}</span>}
-              </Btn>
-            ))}
-          </div>
-
-          <div id="pr-tabpanel" role="tabpanel" aria-labelledby={`pr-tab-${tab}`} className="flex-1 min-h-0 overflow-y-auto">
-            <PullRequestBody source={source} tab={tab} onAddToChat={onAddToChat} />
-          </div>
-        </>
-      )}
+                <div className="min-h-0 overflow-hidden">
+                  <div data-pr-condensed-bar="" className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated text-[12px]">
+                    {condensedChrome && <CondensedTitle title={source.title} />}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div
+              key={tab}
+              id="pr-tabpanel"
+              role="tabpanel"
+              aria-labelledby={`pr-tab-${tab}`}
+              className={`flex-1 min-h-0 ${tab === 'changes' ? '' : 'overflow-y-auto'}`}
+              onScroll={tab === 'changes'
+                ? undefined
+                : event => handleChromeScroll(event.currentTarget.scrollTop)}
+            >
+              {tab === 'changes'
+                ? (
+                  <ChangesTab
+                    key={source.url}
+                    source={source}
+                    condensed={condensedChrome}
+                    onScroll={handleChromeScroll}
+                    collapsedPaths={changesCollapsed}
+                    setCollapsedPaths={setChangesCollapsed}
+                    viewedPaths={changesViewed}
+                    setViewedPaths={setChangesViewed}
+                  />
+                )
+                : <PullRequestBody source={source} tab={tab} onAddToChat={onAddToChat} />}
+            </div>
+          </>
+        )
+      })()}
     </div>
   )
 }
