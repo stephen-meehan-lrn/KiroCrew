@@ -149,6 +149,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "wecom",
         "weixin",
         "teams",
+        "imessage",
         "dashboard",
         "tunnel",
         "hooks",
@@ -426,6 +427,12 @@ def _normalize_threshold_pair(soft: int, hard: int) -> tuple[int, int]:
     if soft > hard:
         soft = hard
     return soft, hard
+
+
+#: Outbound services the iMessage bridge accepts. Anything else is a typo that
+#: would be rejected per send rather than at load time. Shared with the settings
+#: API so the form's choices and the loader's clamp cannot drift apart.
+IMESSAGE_SERVICES = frozenset(("imessage", "sms", "auto"))
 
 
 def _safe_bool(value: object, default: bool) -> bool:
@@ -5593,6 +5600,96 @@ class WebexConfig:
 
 
 @dataclass
+class IMessageConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the iMessage channel. macOS only, and the gateway must run "
+            "on the Mac that is signed in to Messages. Needs no bot and no "
+            "token — it drives Messages.app through the local imsg bridge, so "
+            "nothing about the conversation leaves this machine.",
+            tags=["imessage"],
+        ),
+    )
+    db_path: str = field(
+        default="",
+        metadata=_meta(
+            "Messages Database Path",
+            "Override the Messages database location. Empty (the default) lets "
+            "the bridge use ~/Library/Messages/chat.db. Reading it needs Full "
+            "Disk Access for the process the gateway runs as.",
+            tags=["imessage"],
+        ),
+    )
+    allowed_handles: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Handles",
+            "Phone numbers or Apple ID emails permitted to message the agent. "
+            "Empty = deny all (fail closed): anyone who knows this Mac's handle "
+            "can send to it. Formatting is ignored, so '+61 400 000 000' and "
+            "'+61400000000' are the same handle.",
+            tags=["imessage"],
+        ),
+    )
+    service: str = field(
+        default="imessage",
+        metadata=_meta(
+            "Send Service",
+            "Which service outbound replies use: 'imessage' (default), 'sms', "
+            "or 'auto' to let the bridge fall back to SMS when iMessage is "
+            "unavailable. Inbound is unaffected — the channel answers on "
+            "whichever service the message arrived over.",
+            tags=["imessage"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a conversation's context passes this, prompt the user to "
+            "/compact or /new instead of auto-compacting.",
+            tags=["imessage"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this, even without a user "
+            "decision, so the window never overflows.",
+            tags=["imessage"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["imessage"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Shared normalization: clamp both thresholds and guarantee soft <= hard
+        # so a misconfig can't make the soft nudge unreachable -- _maybe_notice
+        # checks ``pct >= hard`` first. Mirrors WebexConfig.
+        self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
+            self.soft_threshold_pct, self.hard_threshold_pct
+        )
+        # An unrecognized service would be forwarded to the bridge and rejected
+        # per send, turning a typo into a channel that accepts messages and
+        # never answers. Fall back to the safe default instead.
+        service = (self.service or "").strip().lower()
+        self.service = service if service in IMESSAGE_SERVICES else "imessage"
+
+
+@dataclass
 class TeamsConfig:
     enabled: bool = field(
         default=False,
@@ -5804,6 +5901,14 @@ class KiroCrewConfig:
     teams: TeamsConfig = field(
         default_factory=TeamsConfig,
         metadata=_meta("Teams", "Microsoft Teams integration settings.", tags=["teams"]),
+    )
+    imessage: IMessageConfig = field(
+        default_factory=IMessageConfig,
+        metadata=_meta(
+            "iMessage",
+            "iMessage integration settings (macOS only, local bridge, no bot token).",
+            tags=["imessage"],
+        ),
     )
     dashboard: DashboardConfig = field(
         default_factory=DashboardConfig,
@@ -6038,6 +6143,9 @@ class KiroCrewConfig:
         teams_data = data.get("teams", {})
         if not isinstance(teams_data, dict):
             teams_data = {}
+        imessage_data = data.get("imessage", {})
+        if not isinstance(imessage_data, dict):
+            imessage_data = {}
         slack_data = data.get("slack", {})
         if not isinstance(slack_data, dict):
             slack_data = {}
@@ -6497,6 +6605,17 @@ class KiroCrewConfig:
                 ),
                 soft_threshold_pct=_threshold_pct(webex_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_threshold_pct(webex_data.get("hard_threshold_pct"), 95),
+            ),
+            imessage=IMessageConfig(
+                session_folder=_coerce_session_folder(imessage_data.get("session_folder")),
+                enabled=bool(imessage_data.get("enabled", False)),
+                db_path=str(imessage_data.get("db_path", "")),
+                allowed_handles=[
+                    h for h in _safe_list(imessage_data.get("allowed_handles")) if isinstance(h, str) and h
+                ],
+                service=str(imessage_data.get("service", "") or "imessage"),
+                soft_threshold_pct=_threshold_pct(imessage_data.get("soft_threshold_pct"), 80),
+                hard_threshold_pct=_threshold_pct(imessage_data.get("hard_threshold_pct"), 95),
             ),
             teams=TeamsConfig(
                 session_folder=_coerce_session_folder(teams_data.get("session_folder")),
@@ -7005,6 +7124,7 @@ class KiroCrewConfig:
             "wecom": asdict(self.wecom),
             "weixin": asdict(self.weixin),
             "teams": asdict(self.teams),
+            "imessage": asdict(self.imessage),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
             "hooks": self.hooks,

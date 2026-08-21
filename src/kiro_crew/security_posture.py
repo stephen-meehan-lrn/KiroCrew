@@ -821,6 +821,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
         "autonudge_authz.py",
+        # Gate-side log hygiene for a channel whose user identity IS a phone
+        # number or an Apple Account email. ``redact_handle`` shortens a handle
+        # before it reaches a gateway log line or a SEL ``caller`` field; the
+        # channel's own egress path is the renderer, whose redaction is the
+        # shared TurnDriver's and is already counted there. None of these
+        # modules writes to the user through this call: the renderer's use is a
+        # LOG line naming which delivery failed, not message content.
+        "imessage/client.py",
+        "imessage/renderer.py",
+        "imessage/transport.py",
+        "imessage/transport_dispatch.py",
         "acp/_dispatch.py",
         "acp/client.py",
         # Redacts the tool title in the auto-rejected-permission WARNING (a
@@ -1301,6 +1312,7 @@ _AUDIT_SURFACE_DETAIL: dict[str, str] = {
     "weixin": "Weixin messages, approvals, and owner-authorization decisions",
     "webex": "Webex messages, approvals, and owner-authorization decisions",
     "teams": "Microsoft Teams messages, approvals, and owner-authorization decisions",
+    "imessage": "iMessage messages, approvals, and owner-authorization decisions",
     "host": "In-process governance checks not driven by a user-facing surface",
     "unknown": "Events that carry no surface signal (classified rather than misattributed)",
 }
