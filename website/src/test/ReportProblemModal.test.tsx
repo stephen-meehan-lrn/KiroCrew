@@ -14,6 +14,14 @@ import ReportProblemModal from '../components/ReportProblemModal'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 
+// The reveal delivery is gated on directLocal (a remote session cannot drive
+// Finder on the gateway). These delivery tests exercise the local case, so pin
+// directLocal true; a dedicated test below covers the remote (hidden) case.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
+
 const BUNDLE = {
   zip_path: '/home/builder/.kiro/crew/diagnostics/report-2026-08-13.zip',
   download_url: '/api/diagnostics/report-2026-08-13.zip',
@@ -35,7 +43,7 @@ async function collect(platform?: string) {
 }
 
 describe('ReportProblemModal deliveries', () => {
-  beforeEach(() => { vi.restoreAllMocks() })
+  beforeEach(() => { vi.restoreAllMocks(); brandingEnv.directLocal = true })
 
   it('hands the zip to the desktop through the reveal endpoint', async () => {
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
@@ -55,5 +63,14 @@ describe('ReportProblemModal deliveries', () => {
     await collect(platform)
     expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     expect(screen.queryByText('Show in Finder')).not.toBeInTheDocument()
+  })
+
+  it('hides the reveal delivery for a remote (non-local) session', async () => {
+    brandingEnv.directLocal = false
+    await collect('darwin')
+    // Download and the GitHub-issue link still work; only reveal is hidden,
+    // because /api/reveal would drive Finder on a host the user is not at.
+    expect(screen.queryByRole('button', { name: 'Open in Finder' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download zip' })).toBeInTheDocument()
   })
 })

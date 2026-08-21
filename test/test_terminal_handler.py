@@ -2198,12 +2198,18 @@ class TestTerminalWsIntegration:
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/ping-sess") as ws:
                 await ws.send_str(json.dumps({"type": "ping"}))
-                # Drain binary PTY frames until we get the text pong
+                # Drain binary PTY frames and the "ready" control frame until we
+                # get the text pong.
+                data = None
                 for _ in range(20):
                     msg = await ws.receive(timeout=2)
-                    if msg.type == web.WSMsgType.TEXT:
-                        break
-                data = json.loads(msg.data)
+                    if msg.type != web.WSMsgType.TEXT:
+                        continue
+                    payload = json.loads(msg.data)
+                    if payload.get("type") == "ready":
+                        continue
+                    data = payload
+                    break
                 assert data == {"type": "pong"}
                 await ws.close()
 
@@ -2259,8 +2265,14 @@ class TestTerminalWsIntegration:
             async with client.ws_connect("/api/ws/terminal/io-sess") as ws:
                 # Send a command — the PTY should echo something back
                 await ws.send_bytes(b"echo hello\n")
-                # Read at least one binary frame back (PTY output)
-                msg = await ws.receive(timeout=3)
+                # Read at least one binary frame back (PTY output), skipping the
+                # "ready" control frame the handler sends first.
+                msg = None
+                for _ in range(20):
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == web.WSMsgType.BINARY:
+                        break
+                assert msg is not None
                 assert msg.type == web.WSMsgType.BINARY
                 assert len(msg.data) > 0
                 await ws.close()
@@ -2544,12 +2556,18 @@ class TestTerminalWsIntegration:
                 await ws.send_str("not valid json")
                 # Should not crash — send a ping to verify connection alive
                 await ws.send_str(json.dumps({"type": "ping"}))
-                # Drain binary PTY frames until we get the text pong
+                # Drain binary PTY frames and the "ready" control frame until we
+                # get the text pong.
+                data = None
                 for _ in range(20):
                     msg = await ws.receive(timeout=2)
-                    if msg.type == web.WSMsgType.TEXT:
-                        break
-                data = json.loads(msg.data)
+                    if msg.type != web.WSMsgType.TEXT:
+                        continue
+                    payload = json.loads(msg.data)
+                    if payload.get("type") == "ready":
+                        continue
+                    data = payload
+                    break
                 assert data == {"type": "pong"}
                 await ws.close()
 

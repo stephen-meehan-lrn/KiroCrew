@@ -12,6 +12,15 @@ vi.mock('../api/client', async importOriginal => {
   }
 })
 
+// The reveal delivery is gated on directLocal — a remote session cannot drive
+// the gateway host's file manager, so /api/reveal degrades to a clipboard copy
+// and the button is hidden. These suites exercise the local case, so pin
+// directLocal true; the trailing case flips it to assert the hidden state.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
+
 const collectDiagnostics = vi.mocked(api.collectDiagnostics)
 const revealPath = vi.mocked(api.revealPath)
 
@@ -37,6 +46,7 @@ describe('ReportProblemModal', () => {
     collectDiagnostics.mockReset()
     revealPath.mockReset()
     revealPath.mockResolvedValue(undefined as never)
+    brandingEnv.directLocal = true
   })
 
   it('sends the typed note and the logs toggle to the collector', async () => {
@@ -72,13 +82,35 @@ describe('ReportProblemModal', () => {
 
     // The reveal delivery names the GATEWAY host's file manager. This render
     // seeds no platform, so it is the generic arm; the per-platform arms live in
-    // test/ReportProblemModal.test.tsx.
+    // test/ReportProblemModal.test.tsx. The label is the shared useRevealLabel
+    // wording (components.markdownPanel.*), now that the modal reuses that hook.
     fireEvent.click(
       screen.getByRole('button', {
-        name: i18nT('components.reportProblemModal.show_in_file_manager'),
+        name: i18nT('components.markdownPanel.show_in_file_manager'),
       }),
     )
     expect(revealPath).toHaveBeenCalledWith('/zzq/tmp/zzq-bundle.zip')
+  })
+
+  it('hides the reveal delivery for a remote (non-local) session', async () => {
+    // On a remote session /api/reveal cannot drive the gateway's file manager,
+    // so the reveal delivery is hidden; download and the GitHub issue survive.
+    brandingEnv.directLocal = false
+    collectDiagnostics.mockResolvedValue(bundle())
+    renderWithProviders(<ReportProblemModal open onClose={vi.fn()} />)
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(screen.getByText('/zzq/tmp/zzq-bundle.zip')).toBeInTheDocument())
+
+    expect(
+      screen.queryByRole('button', {
+        name: i18nT('components.markdownPanel.show_in_file_manager'),
+      }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: i18nT('components.reportProblemModal.download_zip') }),
+    ).toBeInTheDocument()
+    expect(revealPath).not.toHaveBeenCalled()
   })
 
   it('surfaces an ApiError message verbatim', async () => {

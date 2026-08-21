@@ -6,7 +6,9 @@
       "session_expired": "Sessione scaduta.",
       "session_expired_sign_in_again": "Sessione scaduta. Esegui kirocrew token in un terminale, quindi incolla l'URL nel banner in cima a questa pagina per accedere di nuovo.",
       "stream_ended_without_completion": "Lo stream è terminato senza completarsi",
-      "unexpected_server_response": "Risposta del server inaspettata"
+      "unexpected_server_response": "Risposta del server inaspettata",
+      "path_copied_fallback": "Percorso copiato — i file si aprono sulla macchina che esegue Kiro Crew, non qui.",
+      "path_copied_no_desktop": "Percorso copiato — questa macchina non ha un gestore file per aprirlo."
     }
   },
   "app": {
@@ -1491,13 +1493,9 @@
         "copy_path_2": "Copia percorso: {{path}}",
         "download": "Scarica",
         "more_options": "Altre opzioni",
-        "open_in_file_explorer": "Apri in Esplora file",
-        "open_in_finder": "Apri nel Finder",
-        "path_copied_to_clipboard_no_desktop_available": "Percorso copiato negli appunti (nessun desktop disponibile)",
         "reload": "Ricarica",
         "select_a_file_to_view": "Seleziona un file da visualizzare",
         "sensitive_file_avoid_sharing_your_screen_while_v": "File sensibile — evita di condividere lo schermo mentre visualizzi delle credenziali",
-        "show_in_file_manager": "Mostra nel gestore file",
         "tip_ctrl_cmd_f_to_search": "Suggerimento: Ctrl/Cmd+F per cercare",
         "truncated": "· troncato"
       },
@@ -5667,7 +5665,6 @@
       "open_in_file_explorer": "Apri in Esplora file",
       "open_in_finder": "Apri nel Finder",
       "open_with_default_app": "Apri con l’applicazione predefinita",
-      "path_copied_to_clipboard_no_desktop_available": "Percorso copiato negli appunti (nessun desktop disponibile)",
       "preview": "Anteprima",
       "previous_match": "Corrispondenza precedente",
       "previous_shift_enter": "Precedente (Maiusc+Invio)",
@@ -5703,6 +5700,8 @@
       "click_to_copy": "Fai clic per copiare",
       "click_to_open_shift_click_to_open_in_file_explorer": "Clicca per aprire / Maiusc+clic per mostrare in Esplora file",
       "click_to_open_shift_click_to_reveal_in_finder": "Clicca per aprire / Maiusc+clic per mostrare nel Finder",
+      "click_to_open_shift_click_to_copy_path": "Clicca per aprire / Maiusc+clic per copiare il percorso",
+      "click_to_browse_shift_click_to_copy_path": "Clicca per esplorare / Maiusc+clic per copiare il percorso",
       "click_to_open_shift_click_to_show_in_file_manager": "Clicca per aprire / Maiusc+clic per mostrare nel gestore file",
       "close": "Chiudi",
       "copied": "Copiato!",
@@ -6180,13 +6179,10 @@
       "include_recent_logs": "Includi i log recenti",
       "note_placeholder": "es. Dopo l'aggiornamento ogni messaggio va in errore con \"process exited (rc=None)\".",
       "open_github_issue": "Apri una issue su GitHub",
-      "open_in_file_explorer": "Apri in Esplora file",
-      "open_in_finder": "Apri nel Finder",
       "prefill_hint": "Aprendo la issue i dettagli vengono precompilati — poi trascinaci lo zip.",
       "redaction_notice": "I token Bearer, i cookie di sessione e le chiavi AWS vengono rimossi automaticamente prima di creare lo zip.",
       "report_a_problem": "Segnala un problema",
       "saved_to": "Salvato in",
-      "show_in_file_manager": "Mostra nel gestore file",
       "what_happened": "Cosa è successo?"
     },
     "resizeHandle": {
@@ -6847,6 +6843,11 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "filePathMenu": {
+      "copy_path": "Copia percorso",
+      "reveal_blocked": "Questo percorso è protetto e non può essere aperto.",
+      "reveal_failed": "Impossibile aprire questo percorso sul computer che esegue Kiro Crew."
     }
   },
   "hooks": {
@@ -7884,14 +7885,11 @@
         "matches": "Corrispondenze",
         "no_changes": "Albero di lavoro senza modifiche",
         "no_files_match": "Nessun file corrispondente",
-        "open_in_file_explorer": "Apri in Esplora file",
-        "open_in_finder": "Apri nel Finder",
         "parent_folder": "Cartella superiore",
         "refresh": "Aggiorna",
         "search_failed": "Ricerca non riuscita",
         "search_files": "Cerca file",
         "searching": "Ricerca…",
-        "show_in_file_manager": "Mostra nel gestore file",
         "showing_first_matches": "Mostrando le prime {{shown}} corrispondenze",
         "unable_to_list_folder": "Impossibile elencare la cartella"
       },

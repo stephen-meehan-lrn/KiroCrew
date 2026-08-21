@@ -6,7 +6,9 @@
       "session_expired": "Sitzung abgelaufen.",
       "session_expired_sign_in_again": "Die Sitzung ist abgelaufen. Führen Sie kirocrew token in einem Terminal aus und fügen Sie die URL in das Banner oben auf dieser Seite ein, um sich erneut anzumelden.",
       "stream_ended_without_completion": "Stream endete ohne Abschluss",
-      "unexpected_server_response": "Unerwartete Serverantwort"
+      "unexpected_server_response": "Unerwartete Serverantwort",
+      "path_copied_fallback": "Pfad kopiert — Dateien öffnen sich auf dem Rechner, auf dem Kiro Crew läuft, nicht hier.",
+      "path_copied_no_desktop": "Pfad kopiert — dieser Rechner hat keinen Dateimanager zum Öffnen."
     }
   },
   "app": {
@@ -1494,13 +1496,9 @@
         "copy_path_2": "Pfad kopieren: {{path}}",
         "download": "Herunterladen",
         "more_options": "Weitere Optionen",
-        "open_in_file_explorer": "Im Explorer öffnen",
-        "open_in_finder": "Im Finder öffnen",
-        "path_copied_to_clipboard_no_desktop_available": "Pfad in die Zwischenablage kopiert (kein Desktop verfügbar)",
         "reload": "Neu laden",
         "select_a_file_to_view": "Wählen Sie eine Datei zur Anzeige",
         "sensitive_file_avoid_sharing_your_screen_while_v": "Sensible Datei — vermeiden Sie das Teilen Ihres Bildschirms, während Sie Anmeldedaten ansehen",
-        "show_in_file_manager": "Im Dateimanager anzeigen",
         "tip_ctrl_cmd_f_to_search": "Tipp: Strg/Cmd+F zum Suchen",
         "truncated": "· gekürzt"
       },
@@ -5585,7 +5583,6 @@
       "open_in_file_explorer": "Im Explorer öffnen",
       "open_in_finder": "Im Finder öffnen",
       "open_with_default_app": "Mit Standardanwendung öffnen",
-      "path_copied_to_clipboard_no_desktop_available": "Pfad in die Zwischenablage kopiert (kein Desktop verfügbar)",
       "preview": "Vorschau",
       "previous_match": "Vorheriger Treffer",
       "previous_shift_enter": "Zurück (Shift+Enter)",
@@ -5621,6 +5618,8 @@
       "click_to_copy": "Zum Kopieren klicken",
       "click_to_open_shift_click_to_open_in_file_explorer": "Klicken zum Öffnen / Shift+Klick zum Anzeigen im Explorer",
       "click_to_open_shift_click_to_reveal_in_finder": "Klicken zum Öffnen / Shift+Klick zum Anzeigen im Finder",
+      "click_to_open_shift_click_to_copy_path": "Klicken zum Öffnen / Shift+Klick zum Kopieren des Pfads",
+      "click_to_browse_shift_click_to_copy_path": "Klicken zum Durchsuchen / Shift+Klick zum Kopieren des Pfads",
       "click_to_open_shift_click_to_show_in_file_manager": "Klicken zum Öffnen / Shift+Klick zum Anzeigen im Dateimanager",
       "close": "Schließen",
       "copied": "Kopiert!",
@@ -6092,13 +6091,10 @@
       "include_recent_logs": "Aktuelle Protokolle einbeziehen",
       "note_placeholder": "z. B. Nach dem Update schlägt jede Nachricht mit „process exited (rc=None)“ fehl.",
       "open_github_issue": "GitHub-Issue öffnen",
-      "open_in_file_explorer": "Im Explorer öffnen",
-      "open_in_finder": "Im Finder öffnen",
       "prefill_hint": "Beim Öffnen des Issues werden die Details vorbefüllt — ziehen Sie dann die ZIP-Datei hinein.",
       "redaction_notice": "Bearer-Tokens, Sitzungs-Cookies und AWS-Schlüssel werden automatisch entfernt, bevor die ZIP-Datei erstellt wird.",
       "report_a_problem": "Problem melden",
       "saved_to": "Gespeichert unter",
-      "show_in_file_manager": "Im Dateimanager anzeigen",
       "what_happened": "Was ist passiert?"
     },
     "resizeHandle": {
@@ -6758,6 +6754,11 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "filePathMenu": {
+      "copy_path": "Pfad kopieren",
+      "reveal_blocked": "Dieser Pfad ist geschützt und kann nicht geöffnet werden.",
+      "reveal_failed": "Dieser Pfad konnte auf dem Computer, auf dem Kiro Crew läuft, nicht geöffnet werden."
     }
   },
   "hooks": {
@@ -7782,14 +7783,11 @@
         "matches": "Treffer",
         "no_changes": "Arbeitsverzeichnis ohne Änderungen",
         "no_files_match": "Keine Dateien gefunden",
-        "open_in_file_explorer": "Im Explorer öffnen",
-        "open_in_finder": "Im Finder öffnen",
         "parent_folder": "Übergeordneter Ordner",
         "refresh": "Aktualisieren",
         "search_failed": "Suche fehlgeschlagen",
         "search_files": "Dateien suchen",
         "searching": "Suche…",
-        "show_in_file_manager": "Im Dateimanager anzeigen",
         "showing_first_matches": "Die ersten {{shown}} Treffer werden angezeigt",
         "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
       },

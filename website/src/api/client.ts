@@ -1578,7 +1578,7 @@ export const api = {
   // the enterprise ceiling is file-authored and un-editable via the UI.
   governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,
   suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: string[]; generated_at: number; stale: boolean }>,
-  branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string }>,
+  branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
   // Instances (multi-instance management) — owner-only, gated by instances.enabled.
   // listInstances throws ApiError(403) when the feature is disabled; callers
   // should catch and render the enable toggle rather than an error. `active`
@@ -2241,8 +2241,18 @@ export const api = {
   // hands a regular file to its default application. Headless hosts have
   // neither, so the backend answers with `copy` and the path goes to the
   // clipboard instead of the call silently doing nothing.
-  revealPath: (path: string, action: 'open' | 'reveal' = 'reveal') => post('/api/reveal', { path, action }).then(j).then((r: { copy?: string }) => {
-    if (r.copy) copyToClipboard(r.copy)
+  // When the backend degrades to the clipboard it names the cause in `reason`,
+  // a closed enum: 'remote_request' (the user is not at this machine) vs
+  // 'no_desktop' (a local but headless host with no file manager). The two need
+  // different confirmations — "files open on the machine running Kiro Crew, not
+  // here" is false for a headless local box — so the copy branches on the enum.
+  // An absent/unknown reason falls back to the remote wording (the common case
+  // and the safe default). `reason` is a fixed literal, never rendered as prose.
+  revealPath: (path: string, action: 'open' | 'reveal' = 'reveal') => post('/api/reveal', { path, action }).then(j).then((r: { copy?: string; reason?: string }) => {
+    if (r.copy) {
+      copyToClipboard(r.copy)
+      alert(i18nT(r.reason === 'no_desktop' ? 'api.client.path_copied_no_desktop' : 'api.client.path_copied_fallback'))
+    }
     return r
   }),
   collectDiagnostics: (body: { note: string; include_logs: boolean }) =>

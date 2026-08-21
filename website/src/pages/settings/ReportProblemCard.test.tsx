@@ -12,6 +12,14 @@ vi.mock('../../api/client', () => ({
   ApiError: class ApiError extends Error {},
 }))
 
+// The reveal delivery is gated on directLocal — a remote session cannot drive
+// the gateway host's file manager. This card exercises the local case, so pin
+// directLocal true; the trailing case flips it to assert the hidden state.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+vi.mock('../../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
+
 function renderCard() {
   const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   return render(
@@ -33,7 +41,10 @@ const RESULT = {
 }
 
 describe('ReportProblemCard', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    brandingEnv.directLocal = true
+  })
 
   it('opens the modal from the Report a Problem button', () => {
     renderCard()
@@ -65,6 +76,26 @@ describe('ReportProblemCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /show in file manager/i }))
     expect(api.revealPath).toHaveBeenCalledWith(RESULT.zip_path)
+  })
+
+  it('hides the reveal action on a remote (non-local) session', async () => {
+    // A remote session cannot drive the gateway's file manager, so /api/reveal
+    // degrades and the reveal delivery is hidden; download + issue survive.
+    brandingEnv.directLocal = false
+    ;(api.collectDiagnostics as ReturnType<typeof vi.fn>).mockResolvedValue(RESULT)
+    renderCard()
+
+    fireEvent.click(screen.getByRole('button', { name: /report a problem/i }))
+    fireEvent.click(screen.getByRole('button', { name: /create report/i }))
+
+    await waitFor(() =>
+      expect(screen.getByText(/3 secret\(s\) redacted/i)).toBeInTheDocument(),
+    )
+    expect(
+      screen.queryByRole('button', { name: /show in file manager/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /download zip/i })).toBeInTheDocument()
+    expect(api.revealPath).not.toHaveBeenCalled()
   })
 
   it('shows an error when collection fails', async () => {

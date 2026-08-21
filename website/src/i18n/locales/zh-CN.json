@@ -6,7 +6,9 @@
       "session_expired": "会话已过期。",
       "session_expired_sign_in_again": "会话已过期。请在终端运行 kirocrew token，然后将 URL 粘贴到本页顶部的横幅中重新登录。",
       "stream_ended_without_completion": "流在完成前结束",
-      "unexpected_server_response": "服务器响应异常"
+      "unexpected_server_response": "服务器响应异常",
+      "path_copied_fallback": "路径已复制 — 文件将在运行 Kiro Crew 的计算机上打开，而非此处。",
+      "path_copied_no_desktop": "路径已复制 — 此计算机没有可用于打开的文件管理器。"
     }
   },
   "app": {
@@ -1433,13 +1435,9 @@
         "copy_path_2": "复制路径：{{path}}",
         "download": "下载",
         "more_options": "更多选项",
-        "open_in_file_explorer": "在文件资源管理器中打开",
-        "open_in_finder": "在 Finder 中打开",
-        "path_copied_to_clipboard_no_desktop_available": "路径已复制到剪贴板（无可用桌面环境）",
         "reload": "重新加载",
         "select_a_file_to_view": "选择要查看的文件",
         "sensitive_file_avoid_sharing_your_screen_while_v": "敏感文件 — 查看凭证时请避免共享屏幕",
-        "show_in_file_manager": "在文件管理器中显示",
         "tip_ctrl_cmd_f_to_search": "提示：Ctrl/Cmd+F 搜索",
         "truncated": "· 已截断"
       },
@@ -5503,7 +5501,6 @@
       "open_in_file_explorer": "在文件资源管理器中打开",
       "open_in_finder": "在 Finder 中打开",
       "open_with_default_app": "用默认应用打开",
-      "path_copied_to_clipboard_no_desktop_available": "路径已复制到剪贴板（无可用桌面环境）",
       "preview": "预览",
       "previous_match": "上一个匹配",
       "previous_shift_enter": "上一个（Shift+Enter）",
@@ -5539,6 +5536,8 @@
       "click_to_copy": "点击复制",
       "click_to_open_shift_click_to_open_in_file_explorer": "点击打开 / Shift+点击在文件资源管理器中显示",
       "click_to_open_shift_click_to_reveal_in_finder": "点击打开 / Shift+点击在 Finder 中显示",
+      "click_to_open_shift_click_to_copy_path": "点击打开 / Shift+点击复制路径",
+      "click_to_browse_shift_click_to_copy_path": "点击浏览 / Shift+点击复制路径",
       "click_to_open_shift_click_to_show_in_file_manager": "点击打开 / Shift+点击在文件管理器中显示",
       "close": "关闭",
       "copied": "已复制！",
@@ -6004,13 +6003,10 @@
       "include_recent_logs": "包含最近日志",
       "note_placeholder": "例如：更新后每条消息都失败，报“process exited (rc=None)”。",
       "open_github_issue": "新建 GitHub issue",
-      "open_in_file_explorer": "在文件资源管理器中打开",
-      "open_in_finder": "在 Finder 中打开",
       "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。",
       "redaction_notice": "Bearer 令牌、会话 cookie 和 AWS 密钥会在生成 zip 前自动移除。",
       "report_a_problem": "反馈问题",
       "saved_to": "保存至",
-      "show_in_file_manager": "在文件管理器中显示",
       "what_happened": "发生了什么？"
     },
     "resizeHandle": {
@@ -6669,6 +6665,11 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "filePathMenu": {
+      "copy_path": "复制路径",
+      "reveal_blocked": "此路径受保护，无法打开。",
+      "reveal_failed": "无法在运行 Kiro Crew 的计算机上打开此路径。"
     }
   },
   "hooks": {
@@ -7680,14 +7681,11 @@
         "matches": "匹配项",
         "no_changes": "工作区无更改",
         "no_files_match": "没有匹配的文件",
-        "open_in_file_explorer": "在文件资源管理器中打开",
-        "open_in_finder": "在 Finder 中打开",
         "parent_folder": "上级目录",
         "refresh": "刷新",
         "search_failed": "搜索失败",
         "search_files": "搜索文件",
         "searching": "正在搜索…",
-        "show_in_file_manager": "在文件管理器中显示",
         "showing_first_matches": "显示前 {{shown}} 个匹配项",
         "unable_to_list_folder": "无法列出目录内容"
       },

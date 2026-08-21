@@ -6,7 +6,9 @@
       "session_expired": "সেশনের মেয়াদ শেষ হয়ে গেছে।",
       "session_expired_sign_in_again": "সেশনের সময় শেষ হয়েছে। টার্মিনালে kirocrew token চালান, তারপর আবার সাইন ইন করতে এই পৃষ্ঠার উপরের ব্যানারে URL পেস্ট করুন।",
       "stream_ended_without_completion": "স্ট্রিম সম্পূর্ণ হওয়ার আগেই শেষ হয়ে গেছে",
-      "unexpected_server_response": "সার্ভার থেকে অপ্রত্যাশিত সাড়া"
+      "unexpected_server_response": "সার্ভার থেকে অপ্রত্যাশিত সাড়া",
+      "path_copied_fallback": "পাথ কপি করা হয়েছে — ফাইলগুলি Kiro Crew চালানো মেশিনে খোলে, এখানে নয়।",
+      "path_copied_no_desktop": "পাথ কপি করা হয়েছে — এই মেশিনে এটি খোলার জন্য কোনো ফাইল ম্যানেজার নেই।"
     }
   },
   "app": {
@@ -1462,13 +1464,9 @@
         "copy_path_2": "পাথ কপি করো: {{path}}",
         "download": "ডাউনলোড",
         "more_options": "আরও অপশন",
-        "open_in_file_explorer": "File Explorer-এ খুলুন",
-        "open_in_finder": "Finder-এ খুলুন",
-        "path_copied_to_clipboard_no_desktop_available": "পাথ ক্লিপবোর্ডে কপি করা হয়েছে (কোনো ডেস্কটপ নেই)",
         "reload": "রিলোড",
         "select_a_file_to_view": "দেখার জন্য একটি ফাইল নির্বাচন করুন",
         "sensitive_file_avoid_sharing_your_screen_while_v": "সংবেদনশীল ফাইল — ক্রেডেনশিয়াল দেখার সময় স্ক্রিন শেয়ার করা এড়িয়ে চলুন",
-        "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
         "tip_ctrl_cmd_f_to_search": "টিপ: সার্চ করতে Ctrl/Cmd+F চাপুন",
         "truncated": "· সংক্ষিপ্ত করা হয়েছে"
       },
@@ -5585,7 +5583,6 @@
       "open_in_file_explorer": "File Explorer-এ খুলুন",
       "open_in_finder": "Finder-এ খুলুন",
       "open_with_default_app": "ডিফল্ট অ্যাপে খোলো",
-      "path_copied_to_clipboard_no_desktop_available": "পাথ ক্লিপবোর্ডে কপি করা হয়েছে (কোনো ডেস্কটপ নেই)",
       "preview": "প্রিভিউ",
       "previous_match": "পূর্ববর্তী মিল",
       "previous_shift_enter": "পূর্ববর্তী (Shift+Enter)",
@@ -5621,6 +5618,8 @@
       "click_to_copy": "কপি করতে ক্লিক করুন",
       "click_to_open_shift_click_to_open_in_file_explorer": "খুলতে ক্লিক করুন / File Explorer-এ দেখাতে Shift+ক্লিক করুন",
       "click_to_open_shift_click_to_reveal_in_finder": "খুলতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
+      "click_to_open_shift_click_to_copy_path": "খুলতে ক্লিক করুন / পাথ কপি করতে Shift+ক্লিক করুন",
+      "click_to_browse_shift_click_to_copy_path": "ব্রাউজ করতে ক্লিক করুন / পাথ কপি করতে Shift+ক্লিক করুন",
       "click_to_open_shift_click_to_show_in_file_manager": "খুলতে ক্লিক করুন / ফাইল ম্যানেজারে দেখাতে Shift+ক্লিক করুন",
       "close": "বন্ধ করুন",
       "copied": "কপি হয়েছে!",
@@ -6092,13 +6091,10 @@
       "include_recent_logs": "সাম্প্রতিক লগ যুক্ত করুন",
       "note_placeholder": "যেমন: আপডেটের পর প্রতিটি মেসেজ “process exited (rc=None)” দিয়ে ব্যর্থ হচ্ছে।",
       "open_github_issue": "GitHub-এ issue খুলুন",
-      "open_in_file_explorer": "File Explorer-এ খুলুন",
-      "open_in_finder": "Finder-এ খুলুন",
       "prefill_hint": "issue খুললে বিবরণ আগেই বসে যায় — এরপর zip টেনে সেখানে দিন।",
       "redaction_notice": "zip তৈরির আগেই Bearer টোকেন, সেশন কুকি এবং AWS কী স্বয়ংক্রিয়ভাবে সরানো হয়।",
       "report_a_problem": "সমস্যা জানান",
       "saved_to": "সংরক্ষণ করা হয়েছে",
-      "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
       "what_happened": "কী হয়েছে?"
     },
     "resizeHandle": {
@@ -6758,6 +6754,11 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "filePathMenu": {
+      "copy_path": "পাথ কপি করুন",
+      "reveal_blocked": "এই পাথটি সুরক্ষিত এবং খোলা যাবে না।",
+      "reveal_failed": "Kiro Crew চালানো মেশিনে এই পাথটি খোলা যায়নি।"
     }
   },
   "hooks": {
@@ -7782,14 +7783,11 @@
         "matches": "মিল",
         "no_changes": "ওয়ার্কিং ট্রিতে কোনো পরিবর্তন নেই",
         "no_files_match": "কোনো ফাইল মেলে না",
-        "open_in_file_explorer": "File Explorer-এ খুলুন",
-        "open_in_finder": "Finder-এ খুলুন",
         "parent_folder": "প্যারেন্ট ফোল্ডার",
         "refresh": "রিফ্রেশ",
         "search_failed": "অনুসন্ধান ব্যর্থ",
         "search_files": "ফাইল খুঁজুন",
         "searching": "খোঁজা হচ্ছে…",
-        "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
         "showing_first_matches": "প্রথম {{shown}}টি মিল দেখানো হচ্ছে",
         "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
       },

@@ -6,7 +6,9 @@
       "session_expired": "Срок сессии истёк.",
       "session_expired_sign_in_again": "Сессия истекла. Выполните kirocrew token в терминале, затем вставьте URL в баннер в верхней части страницы, чтобы войти снова.",
       "stream_ended_without_completion": "Поток прервался до завершения",
-      "unexpected_server_response": "Неожиданный ответ сервера"
+      "unexpected_server_response": "Неожиданный ответ сервера",
+      "path_copied_fallback": "Путь скопирован — файлы открываются на машине, где запущен Kiro Crew, а не здесь.",
+      "path_copied_no_desktop": "Путь скопирован — на этой машине нет файлового менеджера, чтобы его открыть."
     }
   },
   "app": {
@@ -1520,13 +1522,9 @@
         "copy_path_2": "Копировать путь: {{path}}",
         "download": "Скачать",
         "more_options": "Дополнительные параметры",
-        "open_in_file_explorer": "Открыть в проводнике",
-        "open_in_finder": "Открыть в Finder",
-        "path_copied_to_clipboard_no_desktop_available": "Путь скопирован в буфер обмена (рабочий стол недоступен)",
         "reload": "Перезагрузить",
         "select_a_file_to_view": "Выберите файл для просмотра",
         "sensitive_file_avoid_sharing_your_screen_while_v": "Конфиденциальный файл — не демонстрируйте экран при просмотре учётных данных",
-        "show_in_file_manager": "Показать в файловом менеджере",
         "tip_ctrl_cmd_f_to_search": "Совет: Ctrl/Cmd+F для поиска",
         "truncated": "· усечено"
       },
@@ -5749,7 +5747,6 @@
       "open_in_file_explorer": "Открыть в проводнике",
       "open_in_finder": "Открыть в Finder",
       "open_with_default_app": "Открыть в приложении по умолчанию",
-      "path_copied_to_clipboard_no_desktop_available": "Путь скопирован в буфер обмена (рабочий стол недоступен)",
       "preview": "Просмотр",
       "previous_match": "Предыдущее совпадение",
       "previous_shift_enter": "Назад (Shift+Enter)",
@@ -5785,6 +5782,8 @@
       "click_to_copy": "Нажмите, чтобы скопировать",
       "click_to_open_shift_click_to_open_in_file_explorer": "Щелчок — открыть / Shift+щелчок — показать в проводнике",
       "click_to_open_shift_click_to_reveal_in_finder": "Щелчок — открыть / Shift+щелчок — показать в Finder",
+      "click_to_open_shift_click_to_copy_path": "Щелчок — открыть / Shift+щелчок — скопировать путь",
+      "click_to_browse_shift_click_to_copy_path": "Щелчок — просмотреть / Shift+щелчок — скопировать путь",
       "click_to_open_shift_click_to_show_in_file_manager": "Щелчок — открыть / Shift+щелчок — показать в файловом менеджере",
       "close": "Закрыть",
       "copied": "Скопировано!",
@@ -6268,13 +6267,10 @@
       "include_recent_logs": "Включить недавние логи",
       "note_placeholder": "например: После обновления все сообщения падают с «process exited (rc=None)».",
       "open_github_issue": "Открыть issue на GitHub",
-      "open_in_file_explorer": "Открыть в проводнике",
-      "open_in_finder": "Открыть в Finder",
       "prefill_hint": "При открытии issue детали подставятся автоматически — затем перетащите туда zip.",
       "redaction_notice": "Токены Bearer, cookie сессии и ключи AWS удаляются автоматически до создания zip.",
       "report_a_problem": "Сообщить о проблеме",
       "saved_to": "Сохранено в",
-      "show_in_file_manager": "Показать в файловом менеджере",
       "what_happened": "Что произошло?"
     },
     "resizeHandle": {
@@ -6936,6 +6932,11 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "filePathMenu": {
+      "copy_path": "Копировать путь",
+      "reveal_blocked": "Этот путь защищён, и его нельзя открыть.",
+      "reveal_failed": "Не удалось открыть этот путь на компьютере, где запущен Kiro Crew."
     }
   },
   "hooks": {
@@ -7986,14 +7987,11 @@
         "matches": "Совпадения",
         "no_changes": "Рабочее дерево без изменений",
         "no_files_match": "Нет подходящих файлов",
-        "open_in_file_explorer": "Открыть в проводнике",
-        "open_in_finder": "Открыть в Finder",
         "parent_folder": "Родительская папка",
         "refresh": "Обновить",
         "search_failed": "Поиск не удался",
         "search_files": "Поиск файлов",
         "searching": "Поиск…",
-        "show_in_file_manager": "Показать в файловом менеджере",
         "showing_first_matches": "Показаны первые {{shown}} совпадений",
         "unable_to_list_folder": "Не удалось получить список папки"
       },

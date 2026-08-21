@@ -6,7 +6,9 @@
       "session_expired": "Sessão expirada.",
       "session_expired_sign_in_again": "A sessão expirou. Execute kirocrew token em um terminal e cole o URL no banner no topo desta página para entrar novamente.",
       "stream_ended_without_completion": "Stream encerrado sem conclusão",
-      "unexpected_server_response": "Resposta inesperada do servidor"
+      "unexpected_server_response": "Resposta inesperada do servidor",
+      "path_copied_fallback": "Caminho copiado — os arquivos abrem na máquina que executa o Kiro Crew, não aqui.",
+      "path_copied_no_desktop": "Caminho copiado — esta máquina não tem um gerenciador de arquivos para abri-lo."
     }
   },
   "app": {
@@ -1491,13 +1493,9 @@
         "copy_path_2": "Copiar caminho: {{path}}",
         "download": "Baixar",
         "more_options": "Mais opções",
-        "open_in_file_explorer": "Abrir no Explorador de Arquivos",
-        "open_in_finder": "Abrir no Finder",
-        "path_copied_to_clipboard_no_desktop_available": "Caminho copiado para a área de transferência (nenhum desktop disponível)",
         "reload": "Recarregar",
         "select_a_file_to_view": "Selecione um arquivo para visualizar",
         "sensitive_file_avoid_sharing_your_screen_while_v": "Arquivo sensível — evite compartilhar sua tela ao visualizar credenciais",
-        "show_in_file_manager": "Mostrar no gerenciador de arquivos",
         "tip_ctrl_cmd_f_to_search": "Dica: Ctrl/Cmd+F para pesquisar",
         "truncated": "· truncado"
       },
@@ -5667,7 +5665,6 @@
       "open_in_file_explorer": "Abrir no Explorador de Arquivos",
       "open_in_finder": "Abrir no Finder",
       "open_with_default_app": "Abrir com o aplicativo padrão",
-      "path_copied_to_clipboard_no_desktop_available": "Caminho copiado para a área de transferência (nenhum desktop disponível)",
       "preview": "Visualizar",
       "previous_match": "Correspondência anterior",
       "previous_shift_enter": "Anterior (Shift+Enter)",
@@ -5703,6 +5700,8 @@
       "click_to_copy": "Clique para copiar",
       "click_to_open_shift_click_to_open_in_file_explorer": "Clique para abrir / Shift+clique para mostrar no Explorador de Arquivos",
       "click_to_open_shift_click_to_reveal_in_finder": "Clique para abrir / Shift+clique para mostrar no Finder",
+      "click_to_open_shift_click_to_copy_path": "Clique para abrir / Shift+clique para copiar o caminho",
+      "click_to_browse_shift_click_to_copy_path": "Clique para navegar / Shift+clique para copiar o caminho",
       "click_to_open_shift_click_to_show_in_file_manager": "Clique para abrir / Shift+clique para mostrar no gerenciador de arquivos",
       "close": "Fechar",
       "copied": "Copiado!",
@@ -6180,13 +6179,10 @@
       "include_recent_logs": "Incluir logs recentes",
       "note_placeholder": "ex.: Todas as mensagens falham com “process exited (rc=None)” depois de atualizar.",
       "open_github_issue": "Abrir issue no GitHub",
-      "open_in_file_explorer": "Abrir no Explorador de Arquivos",
-      "open_in_finder": "Abrir no Finder",
       "prefill_hint": "Ao abrir a issue os detalhes são preenchidos automaticamente — depois arraste o zip para lá.",
       "redaction_notice": "Tokens Bearer, cookies de sessão e chaves AWS são removidos automaticamente antes de criar o zip.",
       "report_a_problem": "Relatar um problema",
       "saved_to": "Salvo em",
-      "show_in_file_manager": "Mostrar no gerenciador de arquivos",
       "what_happened": "O que aconteceu?"
     },
     "resizeHandle": {
@@ -6847,6 +6843,11 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "filePathMenu": {
+      "copy_path": "Copiar caminho",
+      "reveal_blocked": "Este caminho está protegido e não pode ser aberto.",
+      "reveal_failed": "Não foi possível abrir este caminho na máquina que executa o Kiro Crew."
     }
   },
   "hooks": {
@@ -7884,14 +7885,11 @@
         "matches": "Correspondências",
         "no_changes": "Árvore de trabalho sem alterações",
         "no_files_match": "Nenhum arquivo corresponde",
-        "open_in_file_explorer": "Abrir no Explorador de Arquivos",
-        "open_in_finder": "Abrir no Finder",
         "parent_folder": "Pasta pai",
         "refresh": "Atualizar",
         "search_failed": "A pesquisa falhou",
         "search_files": "Pesquisar arquivos",
         "searching": "Pesquisando…",
-        "show_in_file_manager": "Mostrar no gerenciador de arquivos",
         "showing_first_matches": "Mostrando as primeiras {{shown}} correspondências",
         "unable_to_list_folder": "Não foi possível listar a pasta"
       },

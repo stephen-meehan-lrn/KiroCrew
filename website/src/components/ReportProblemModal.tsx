@@ -10,7 +10,8 @@ import {
   Lock,
 } from 'lucide-react'
 import { Btn, Toggle } from './ui'
-import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
+import { useRevealLabel } from './FilePathMenu'
+import { useBranding } from '../hooks/useBranding'
 import Modal from './Modal'
 import { api, ApiError } from '../api/client'
 
@@ -43,15 +44,16 @@ export default function ReportProblemModal({ open, onClose }: ReportProblemModal
   const [includeLogs, setIncludeLogs] = useState(true)
   const [result, setResult] = useState<CollectResult | null>(null)
   const [error, setError] = useState('')
-  const gatewayPlatform = useGatewayPlatform()
   // The bundle is written on the GATEWAY and `/api/reveal` shells out there, so
-  // that host names the application — generic for Linux and for a platform we
-  // could not read.
-  const revealLabel = gatewayPlatform === 'darwin'
-    ? i18nT('components.reportProblemModal.open_in_finder')
-    : gatewayPlatform === 'windows'
-      ? i18nT('components.reportProblemModal.open_in_file_explorer')
-      : i18nT('components.reportProblemModal.show_in_file_manager')
+  // that host names the application. Shared with every other file-location
+  // surface via useRevealLabel — generic for Linux and for a platform we could
+  // not read.
+  const revealLabel = useRevealLabel()
+  // `/api/reveal` shells out on the gateway; a remote/tunneled session cannot
+  // usefully drive Finder there and would get a mis-worded "Path copied" alert,
+  // so hide the reveal delivery for it — Download and the GitHub-issue link
+  // still work. Same directLocal gate every other file-location surface applies.
+  const { directLocal } = useBranding()
 
   const mut = useMutation({
     mutationFn: () => api.collectDiagnostics({ note, include_logs: includeLogs }),
@@ -165,10 +167,12 @@ export default function ReportProblemModal({ open, onClose }: ReportProblemModal
             {i18nT('components.reportProblemModal.saved_to')} <code>{result.zip_path}</code>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Btn onClick={() => api.revealPath(result.zip_path)}>
-              <FolderOpen size={13} className="lucide-inline" />{' '}
-              {revealLabel}
-            </Btn>
+            {directLocal && (
+              <Btn onClick={() => api.revealPath(result.zip_path)}>
+                <FolderOpen size={13} className="lucide-inline" />{' '}
+                {revealLabel}
+              </Btn>
+            )}
             <a href={result.download_url} download>
               <Btn>
                 <Download size={13} className="lucide-inline" />{' '}

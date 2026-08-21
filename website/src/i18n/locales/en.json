@@ -4646,6 +4646,11 @@
       "verdict_tap_noop": "That’s a quick tap — in “{{mode}}” mode nothing would happen. Hold the key longer.",
       "verdict_toggle": "Recognised — in a real chat this press would start recording, and the next press would stop it.",
       "verdict_wrong_key": "That was {{got}}, not the {{want}} you chose above. If your keyboard has no such key, pick a different one under “{{field}}”."
+    },
+    "filePathMenu": {
+      "copy_path": "Copy path",
+      "reveal_blocked": "This path is protected and can’t be opened.",
+      "reveal_failed": "Couldn't open this path on the machine running Kiro Crew."
     }
   },
   "hooks": {

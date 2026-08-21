@@ -6,7 +6,9 @@
       "session_expired": "セッションの有効期限が切れました。",
       "session_expired_sign_in_again": "セッションの有効期限が切れました。ターミナルで kirocrew token を実行し、このページ上部のバナーに URL を貼り付けて再度サインインしてください。",
       "stream_ended_without_completion": "ストリームが完了せずに終了しました",
-      "unexpected_server_response": "予期しないサーバーレスポンス"
+      "unexpected_server_response": "予期しないサーバーレスポンス",
+      "path_copied_fallback": "パスをコピーしました — ファイルは Kiro Crew を実行しているマシンで開きます。ここではありません。",
+      "path_copied_no_desktop": "パスをコピーしました — このマシンには開くためのファイルマネージャーがありません。"
     }
   },
   "app": {
@@ -1465,13 +1467,9 @@
         "copy_path_2": "パスをコピー：{{path}}",
         "download": "ダウンロード",
         "more_options": "その他のオプション",
-        "open_in_file_explorer": "エクスプローラーで開く",
-        "open_in_finder": "Finder で開く",
-        "path_copied_to_clipboard_no_desktop_available": "パスをクリップボードにコピーしました（デスクトップ環境がありません）",
         "reload": "再読み込み",
         "select_a_file_to_view": "表示するファイルを選択",
         "sensitive_file_avoid_sharing_your_screen_while_v": "機密ファイル — 認証情報を表示しながら画面を共有しないでください",
-        "show_in_file_manager": "ファイルマネージャーに表示",
         "tip_ctrl_cmd_f_to_search": "ヒント: Ctrl/Cmd+Fで検索",
         "truncated": "· 省略"
       },
@@ -5503,7 +5501,6 @@
       "open_in_file_explorer": "エクスプローラーで開く",
       "open_in_finder": "Finder で開く",
       "open_with_default_app": "デフォルトアプリで開く",
-      "path_copied_to_clipboard_no_desktop_available": "パスをクリップボードにコピーしました（デスクトップ環境がありません）",
       "preview": "プレビュー",
       "previous_match": "前の一致",
       "previous_shift_enter": "前へ (Shift+Enter)",
@@ -5539,6 +5536,8 @@
       "click_to_copy": "クリックしてコピー",
       "click_to_open_shift_click_to_open_in_file_explorer": "クリックして開く / Shift+クリックでエクスプローラーに表示",
       "click_to_open_shift_click_to_reveal_in_finder": "クリックして開く / Shift+クリックで Finder に表示",
+      "click_to_open_shift_click_to_copy_path": "クリックして開く / Shift+クリックでパスをコピー",
+      "click_to_browse_shift_click_to_copy_path": "クリックして参照 / Shift+クリックでパスをコピー",
       "click_to_open_shift_click_to_show_in_file_manager": "クリックして開く / Shift+クリックでファイルマネージャーに表示",
       "close": "閉じる",
       "copied": "コピーしました！",
@@ -6004,13 +6003,10 @@
       "include_recent_logs": "最近のログを含める",
       "note_placeholder": "例：更新後、すべてのメッセージが「process exited (rc=None)」で失敗します。",
       "open_github_issue": "GitHub イシューを開く",
-      "open_in_file_explorer": "エクスプローラーで開く",
-      "open_in_finder": "Finder で開く",
       "prefill_hint": "イシューを開くと詳細が事前入力されます — その後、zip をドラッグしてください。",
       "redaction_notice": "Bearer トークン、セッションクッキー、および AWS キーは、zip が作成される前に自動的に削除されます。",
       "report_a_problem": "問題を報告",
       "saved_to": "保存先",
-      "show_in_file_manager": "ファイルマネージャーに表示",
       "what_happened": "何が起こりましたか？"
     },
     "resizeHandle": {
@@ -6669,6 +6665,11 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "filePathMenu": {
+      "copy_path": "パスをコピー",
+      "reveal_blocked": "このパスは保護されているため開けません。",
+      "reveal_failed": "Kiro Crew を実行しているマシンでこのパスを開けませんでした。"
     }
   },
   "hooks": {
@@ -7680,14 +7681,11 @@
         "matches": "一致",
         "no_changes": "作業ツリーに変更はありません",
         "no_files_match": "一致するファイルがありません",
-        "open_in_file_explorer": "エクスプローラーで開く",
-        "open_in_finder": "Finder で開く",
         "parent_folder": "親フォルダー",
         "refresh": "更新",
         "search_failed": "検索に失敗しました",
         "search_files": "ファイルを検索",
         "searching": "検索中…",
-        "show_in_file_manager": "ファイルマネージャーに表示",
         "showing_first_matches": "最初の {{shown}} 件の一致を表示しています",
         "unable_to_list_folder": "フォルダーを一覧表示できません"
       },
