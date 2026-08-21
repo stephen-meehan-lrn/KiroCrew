@@ -7,8 +7,11 @@ command on Linux where there is no brew.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+
+import pytest
 
 from kiro_crew import cli_doctor
 
@@ -1114,3 +1117,234 @@ class TestCliInstallerResidue:
         assert "4.0 MiB" in out
         assert "≥" not in out
         assert "4+" not in out
+
+
+class TestEffectiveModelSection:
+    """`kirocrew doctor`'s Model section (#2559).
+
+    The four-tier model precedence is not visible from any single file, so a
+    stale spec pin that outlived the setting which created it is otherwise only
+    diagnosable by hand-reading config.json, two agent-spec directories and the
+    sidecar. This section names the winning tier and, when a pin is deciding,
+    the exact command that clears it.
+
+    ISOLATION: the section reads the directory the RESOLVER reads, and that
+    resolver is ``kiro_home()``, which the suite's autouse fixtures deliberately
+    do NOT pin (see the note in the rootdir conftest) -- it resolves the real
+    machine-wide ``~/.kiro``. So every test here sets ``KIRO_HOME`` itself, and
+    ``_agents_dir`` asserts the resolved path really is under tmp before writing
+    a byte. Without that guard these tests overwrite the operator's live agent
+    spec.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_kiro_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
+        self._tmp = tmp_path
+
+    def _agents_dir(self) -> Path:
+        from kiro_crew.config.paths import kiro_agents_dir
+
+        agents_dir = kiro_agents_dir()
+        # Fail loudly rather than write into a real home if the override lapses.
+        assert self._tmp in agents_dir.parents or agents_dir.is_relative_to(self._tmp), (
+            f"KIRO_HOME isolation failed: {agents_dir} is outside {self._tmp}"
+        )
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        return agents_dir
+
+    def _cfg(self, global_model: str):
+        from kiro_crew.config import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agent.model = global_model
+        return cfg
+
+    def _install_spec(self, model: str | None) -> Path:
+        from kiro_crew.agent import AGENT_FILENAME
+
+        body: dict = {"name": "kirocrew"}
+        if model is not None:
+            body["model"] = model
+        spec = self._agents_dir() / AGENT_FILENAME
+        spec.write_text(json.dumps(body), encoding="utf-8")
+        return spec
+
+    def test_spec_pin_decides_when_the_global_defers(self, capsys) -> None:
+        """The reported symptom: the global says auto, so the spec pin decides
+        and the report says so instead of leaving the user to work it out."""
+        self._install_spec("claude-opus-4.8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
+
+        out = capsys.readouterr().out
+        assert "effective:   claude-opus-4.8" in out
+        assert "decided by:  default spec pin" in out
+        assert "kirocrew agent reset-model" in out
+        # Advisory, not a setup failure: the state is legal and may be wanted.
+        assert issues == []
+
+    def test_explicit_global_outranks_the_spec_pin(self, capsys) -> None:
+        self._install_spec("claude-opus-4.8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("claude-haiku-4.5"), "", issues)
+
+        out = capsys.readouterr().out
+        assert "effective:   claude-haiku-4.5" in out
+        assert "decided by:  global agent.model" in out
+        # No pin is deciding, so no repair is offered.
+        assert "reset-model" not in out
+        assert issues == []
+
+    def test_report_and_resolver_agreement_is_asserted(self, capsys) -> None:
+        """The self-check must stay silent while the two agree -- if this line
+        ever fires it means the tier list drifted from the resolver."""
+        self._install_spec("claude-opus-4.8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
+        assert "out of date" not in capsys.readouterr().out
+        assert issues == []
+
+    def test_tracking_state_is_reported(self, capsys) -> None:
+        from kiro_crew import agent_state
+
+        agent_state.set_model_managed("kirocrew", False)
+        self._install_spec("claude-opus-4.8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
+        assert "tracking:    frozen (explicit pick)" in capsys.readouterr().out
+
+    def test_unrecorded_tracking_is_named(self, capsys) -> None:
+        self._install_spec("claude-opus-4.8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
+        assert "tracking:    not recorded" in capsys.readouterr().out
+
+    def test_unreadable_spec_is_reported_not_swallowed(self, capsys) -> None:
+        from kiro_crew.agent import AGENT_FILENAME
+
+        (self._agents_dir() / AGENT_FILENAME).write_text("{ not json", encoding="utf-8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
+        assert "unreadable" in capsys.readouterr().out
+        assert issues == ["agent spec unreadable"]
+
+    def test_project_local_spec_is_flagged_as_shadowing(self, capsys) -> None:
+        """kiro-cli resolves <project>/.kiro/agents FIRST and Kiro Crew's own
+        resolver never reads it, so that file can decide what actually runs while
+        every Kiro Crew surface reports something else."""
+        from kiro_crew.agent import AGENT_FILENAME
+
+        self._install_spec(None)
+        project = self._tmp / "proj"
+        (project / ".kiro" / "agents").mkdir(parents=True)
+        (project / ".kiro" / "agents" / AGENT_FILENAME).write_text(
+            json.dumps({"name": "kirocrew", "model": "claude-opus-4.8"}), encoding="utf-8"
+        )
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), str(project), issues)
+
+        out = capsys.readouterr().out
+        assert "project spec" in out
+        assert "claude-opus-4.8" in out
+        assert "kiro-cli loads this one first" in out
+        assert issues == ["project-local agent spec shadows the user-level one"]
+
+    def test_no_project_dir_prints_no_project_line(self, capsys) -> None:
+        self._install_spec(None)
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
+        assert "project spec" not in capsys.readouterr().out
+        assert issues == []
+
+    def _bind_custom_agent(self, cfg, name: str):
+        """Point the default alias at a non-built-in kiro agent."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg.default_agent = "default"
+        cfg.agents["default"] = KiroCrewAgentConfig(kiro_agent=name)
+        return cfg
+
+    def test_a_bound_custom_agent_is_attributed_to_its_own_spec(self, capsys) -> None:
+        """The default alias may bind a kiro agent other than the built-in one,
+        and the resolver consults THAT spec's pin above the global (tier 2).
+        Reading kirocrew.json in both cases attributed the pin to the wrong file
+        and printed a reset command for the wrong agent (#4911 review)."""
+        self._install_spec(None)
+        agents_dir = self._agents_dir()
+        (agents_dir / "custom-agent.json").write_text(
+            json.dumps({"name": "custom-agent", "model": "claude-opus-4.8"}), encoding="utf-8"
+        )
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom-agent")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+
+        out = capsys.readouterr().out
+        assert "effective:   claude-opus-4.8" in out
+        assert "decided by:  bound agent pin (custom-agent)" in out
+        # The repair must name the agent that actually holds the pin.
+        assert "kirocrew agent reset-model --agent custom-agent" in out
+        # And the tier the resolver skipped for the built-in agent is shown here.
+        assert "bound agent pin (custom-agent):" in out
+        assert "out of date" not in out, "report must agree with the resolver"
+        assert issues == []
+
+    def test_the_builtin_agent_shows_no_bound_tier(self, capsys) -> None:
+        """Tier 2 is skipped for the built-in agent, so the list must not show
+        a tier the resolver never consulted."""
+        self._install_spec("claude-opus-4.8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(self._cfg("auto"), "", issues)
+
+        out = capsys.readouterr().out
+        assert "bound agent pin" not in out
+        assert "decided by:  default spec pin" in out
+        assert "kirocrew agent reset-model" in out
+        assert "--agent" not in out, "the built-in agent needs no --agent flag"
+
+    def test_tracking_names_the_agent_it_describes(self, capsys) -> None:
+        from kiro_crew import agent_state
+
+        self._install_spec(None)
+        agents_dir = self._agents_dir()
+        (agents_dir / "custom-agent.json").write_text(
+            json.dumps({"name": "custom-agent", "model": "claude-opus-4.8"}), encoding="utf-8"
+        )
+        agent_state.set_model_managed("custom-agent", False)
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom-agent")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+        assert "tracking:    frozen (explicit pick) (custom-agent)" in capsys.readouterr().out
+
+    def test_project_spec_check_follows_the_bound_agent(self, capsys) -> None:
+        """kiro-cli dispatches the BOUND agent, so that is the filename whose
+        project-local copy can shadow the user-level spec."""
+        self._install_spec(None)
+        agents_dir = self._agents_dir()
+        (agents_dir / "custom-agent.json").write_text(
+            json.dumps({"name": "custom-agent"}), encoding="utf-8"
+        )
+        project = self._tmp / "proj"
+        (project / ".kiro" / "agents").mkdir(parents=True)
+        (project / ".kiro" / "agents" / "custom-agent.json").write_text(
+            json.dumps({"name": "custom-agent", "model": "claude-haiku-4.5"}), encoding="utf-8"
+        )
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom-agent")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(cfg, str(project), issues)
+
+        out = capsys.readouterr().out
+        assert "custom-agent.json -> claude-haiku-4.5" in out
+        assert issues == ["project-local agent spec shadows the user-level one"]

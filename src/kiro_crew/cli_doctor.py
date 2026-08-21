@@ -19,6 +19,7 @@ from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
 from kiro_crew import diagnostics, platform_compat, sandbox
+from kiro_crew import agent_state
 from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.acp import kas_assets, kas_auth
 from kiro_crew.acp.client import KIRO_CLI_BIN
@@ -86,6 +87,162 @@ KIRO_AGENTS_DIR: Path | None = None
 def _agents_dir() -> Path:
     """Kiro agents directory, honoring the override hook, else the live home."""
     return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
+
+
+def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[str]) -> None:
+    """Report which model a new session starts on, and which tier decided it.
+
+    The precedence is real and four tiers deep, and the tier that wins is not
+    visible from any single file, so a surprising model -- the wrong one, or a
+    stale one that outlived the setting that created it -- is otherwise only
+    diagnosable by hand-reading config.json, two agent-spec directories and the
+    sidecar.
+
+    The tiers are listed as DATA and the first non-deferring one is marked, which
+    is ``resolve_effective_model``'s own rule. The marked value is then
+    cross-checked against what that function actually returns and a disagreement
+    is REPORTED rather than hidden, so this report cannot quietly drift into a
+    second, wrong copy of the precedence.
+
+    Read-only: this section never repairs anything, because a spec's ``model``
+    cannot be attributed -- a value an older build's propagation wrote and one
+    the user typed in are identical on disk -- so the repair has to be the
+    user's explicit call (``kirocrew agent reset-model``).
+    """
+    from kiro_crew.config.loader import (
+        normalize_agent_model,
+        resolve_agent_bindings,
+        resolve_effective_model,
+    )
+    from kiro_crew.config.paths import project_agents_dir
+
+    print("\nModel")
+    try:
+        effective = resolve_effective_model(cfg)
+    except Exception as exc:  # noqa: BLE001 -- diagnostics must not crash the report
+        print(f"  effective:   ⚠️  could not resolve ({exc})")
+        issues.append("effective model unresolvable")
+        return
+
+    def _spec_model(path: Path) -> tuple[str, bool]:
+        """Return (normalized model, readable) for a kiro spec file."""
+        if not path.is_file():
+            return "", True
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError):
+            return "", False
+        if not isinstance(data, dict):
+            return "", False
+        return normalize_agent_model(data.get("model")), True
+
+    # Deliberately kiro_agents_dir() and not _agents_dir(): this section compares
+    # tiers against what resolve_effective_model returned, so it has to read the
+    # very directory that function reads. Reporting a different directory's spec
+    # beside its verdict is how a report starts contradicting itself.
+    agents_dir = kiro_agents_dir()
+
+    # The DEFAULT alias may bind a kiro agent other than the built-in one, and
+    # the resolver treats those two differently: a non-default bound agent's own
+    # pin is consulted ABOVE the global (tier 2), while the built-in spec is read
+    # only after the global defers (tier 4). Reading kirocrew.json in both cases
+    # would attribute a custom agent's pin to the wrong file and print a reset
+    # command for the wrong agent.
+    try:
+        bindings = resolve_agent_bindings(cfg)
+        override = normalize_agent_model(bindings.model)
+        bound = bindings.kiro_agent or "kirocrew"
+    except Exception:  # noqa: BLE001 -- a broken alias must not kill the report
+        override = ""
+        bound = "kirocrew"
+
+    default_spec = agents_dir / AGENT_FILENAME
+    default_model, default_readable = _spec_model(default_spec)
+    if not default_readable:
+        print(f"  user spec:   ⚠️  unreadable ({default_spec})")
+        issues.append("agent spec unreadable")
+
+    bound_model = ""
+    bound_spec: Path | None = None
+    if bound != "kirocrew":
+        bound_spec = agents_dir / f"{bound}.json"
+        # Read through the resolver's own accessor: it matches on the spec's
+        # ``name`` field as well as the filename, which a bare path join misses.
+        try:
+            bound_model = normalize_agent_model(cfg._resolve_named_agent_model(bound))
+        except Exception:  # noqa: BLE001
+            bound_model = ""
+
+    # Labelled in resolve_effective_model's own order. Tier 2 is present only
+    # when it applies, so the list never shows a tier the resolver skipped.
+    tiers: list[tuple[str, str]] = [("agent override", override)]
+    if bound != "kirocrew":
+        tiers.append((f"bound agent pin ({bound})", bound_model))
+    tiers.append(("global agent.model", normalize_agent_model(cfg.agent.model)))
+    tiers.append(("default spec pin", default_model))
+
+    decided_by = next((label for label, value in tiers if value), "bundled defaults.json")
+    decided_value = next((value for _, value in tiers if value), effective)
+
+    print(f"  effective:   {effective or 'auto (backend picks)'}")
+    print(f"  decided by:  {decided_by}")
+    for label, value in tiers:
+        print(f"    {label + ':':<26} {value or '(defers)'}")
+    print(f"  spec file:   {default_spec}")
+    if bound_spec is not None:
+        print(f"  bound spec:  {bound_spec}")
+
+    # Self-check: the marked tier must be what the resolver actually returned.
+    if decided_value != effective:
+        print(
+            f"  ⚠️  this report says {decided_value!r} but the resolver returned "
+            f"{effective!r} — the precedence shown here is out of date"
+        )
+        issues.append("doctor model precedence disagrees with the resolver")
+
+    # Which spec is actually deciding, so the tracking state and the repair below
+    # describe THAT agent rather than always the built-in one.
+    if decided_by.startswith("bound agent pin"):
+        pinned_agent, pinned_value = bound, bound_model
+    elif decided_by == "default spec pin":
+        pinned_agent, pinned_value = "kirocrew", default_model
+    else:
+        pinned_agent, pinned_value = bound, ""
+
+    try:
+        managed = agent_state.get_model_managed(pinned_agent)
+    except Exception:  # noqa: BLE001 -- an unreadable sidecar is not fatal here
+        managed = None
+    if managed is None:
+        tracking = "not recorded"
+    else:
+        tracking = "shipped default" if managed else "frozen (explicit pick)"
+    print(f"  tracking:    {tracking} ({pinned_agent})")
+
+    # kiro-cli resolves --agent against <project>/.kiro/agents FIRST, with no
+    # upward walk, and Kiro Crew's own resolver never reads that directory. So a
+    # project-local spec can decide what actually RUNS while every Kiro Crew
+    # surface reports something else -- worth naming even though it is rare.
+    # *project_dir* is the caller's already-resolved value (env, else the saved
+    # project_dir file), so this agrees with the Project section above.
+    if project_dir:
+        # The agent kiro-cli would actually dispatch is the BOUND one, so that is
+        # the filename whose project-local copy can shadow the user-level spec.
+        proj_spec = project_agents_dir(project_dir) / f"{bound}.json"
+        if proj_spec.is_file():
+            proj_model, proj_readable = _spec_model(proj_spec)
+            shown = proj_model or ("(unreadable)" if not proj_readable else "(no model)")
+            print(f"  project spec: ⚠️  {proj_spec} -> {shown}")
+            print("                kiro-cli loads this one first; not read above")
+            issues.append("project-local agent spec shadows the user-level one")
+
+    if pinned_value:
+        flag = "" if pinned_agent == "kirocrew" else f" --agent {pinned_agent}"
+        print(f"  ⚠️  the spec pin decides because the global is {cfg.agent.model or 'unset'}")
+        print(
+            f"      Fix: kirocrew agent reset-model{flag}"
+            "   (clears the pin, tracks the default)"
+        )
 
 
 def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
@@ -1564,6 +1721,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         if not _has_slack:
             print("  auth:        ⚠️  Slack not configured — token generation unavailable")
             issues.append("dashboard auth: remote bind without Slack")
+
+    # ── Effective model (+ which tier decided it) ──
+    # After Configuration, deliberately: that section prints the global
+    # agent.model, and the whole point here is that the global is not
+    # necessarily what a new session gets.
+    _doctor_effective_model(cfg, proj, issues)
 
     # ── Data Home (+ leftover legacy home) ──
     _doctor_data_home()

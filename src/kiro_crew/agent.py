@@ -35,7 +35,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, MutableMapping
 
 from kiro_crew import agent_state, platform_compat
 from kiro_crew.agent_files import (
@@ -76,6 +76,7 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
     SecurityEvent,
     sel,
 )
+from kiro_crew.validation import _AGENT_NAME_RE
 
 logger = logging.getLogger(__name__)
 
@@ -2596,6 +2597,91 @@ def migrate_agent_specs() -> int:
     if cleaned:
         logger.info("Cleaned %d kiro agent spec(s) of KiroCrew bookkeeping keys", cleaned)
     return cleaned
+
+
+def clear_model_pin(config: MutableMapping[str, object], name: str) -> None:
+    """Drop *config*'s ``model`` pin and resume tracking the shipped default.
+
+    The in-place half of "return this agent to the default model", shared by
+    every caller that offers it, so the dashboard's Agent Templates editor and
+    the CLI cannot drift on what clearing a model means (the same reason
+    :func:`agent_state.lift_and_strip_bookkeeping` is shared by four writers).
+    The caller persists *config* itself.
+
+    Deliberately the ONLY way a spec's ``model`` becomes managed after install:
+    ownership cannot be inferred from a spec's value, because a model an older
+    build's propagation wrote and one the user typed in by hand are identical on
+    disk. So this is driven by an explicit user action -- clearing the model in
+    the editor, or ``kirocrew agent reset-model`` -- and never by a heuristic
+    running behind the user's back on refresh.
+
+    Ordering is benign in both directions: if the sidecar write lands and the
+    caller's spec write does not, the next refresh resolves the still-pinned
+    spec to the shipped default, which is what the user asked for; if the spec
+    write lands and the sidecar write does not, the pin is gone and the resolver
+    falls through to the global.
+    """
+    config.pop("model", None)
+    agent_state.set_model_managed(name, True)
+
+
+def agent_spec_path(name: str) -> Path | None:
+    """Return the user-level kiro spec file for *name*, or ``None`` if absent.
+
+    Prefers ``<agents dir>/<name>.json`` and falls back to a scan for a spec
+    whose ``name`` field matches, mirroring how the dashboard's per-agent
+    handler resolves an agent to a file (a spec's filename and its ``name`` are
+    not required to agree).
+
+    *name* is validated against the shared agent-name grammar BEFORE it reaches
+    the path join, so a caller passing a traversal (``../../something``) gets
+    ``None`` rather than a path outside the agents directory. The check lives
+    here, at the resolver, so every caller inherits it instead of each one
+    remembering: this function returns a path that :func:`reset_agent_model`
+    then WRITES, and the CLI takes the name from a user-supplied ``--agent``.
+    """
+    if not _AGENT_NAME_RE.match(name or ""):
+        return None
+    agents_dir = kiro_agents_dir_path()
+    direct = agents_dir / f"{name}.json"
+    if direct.is_file():
+        return direct
+    if not agents_dir.is_dir():
+        return None
+    for spec_path in sorted(agents_dir.glob("*.json")):
+        try:
+            data = json.loads(spec_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("name") == name:
+            return spec_path
+    return None
+
+
+def reset_agent_model(name: str) -> tuple[Path, str]:
+    """Clear *name*'s spec model pin on disk; return (spec path, previous model).
+
+    The explicit, narrow counterpart to ``kirocrew setup --clean``, which also
+    resumes default-model tracking but regenerates the whole spec and discards
+    every user customization with it. Raises ``FileNotFoundError`` when the
+    agent has no user-level spec.
+    """
+    spec_path = agent_spec_path(name)
+    if spec_path is None:
+        raise FileNotFoundError(f"no kiro agent spec for {name!r} in {kiro_agents_dir_path()}")
+    try:
+        data = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        raise FileNotFoundError(f"could not read agent spec {spec_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise FileNotFoundError(f"agent spec {spec_path} is not a JSON object")
+    previous = data.get("model") or ""
+    clear_model_pin(data, name)
+    # Same strip every spec writer runs: kiro-cli validates with
+    # deny_unknown_fields and drops the whole agent on an unknown key.
+    agent_state.lift_and_strip_bookkeeping(data, name)
+    _atomic_json_write(spec_path, data)
+    return spec_path, str(previous)
 
 
 def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:

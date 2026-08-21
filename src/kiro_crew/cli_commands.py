@@ -820,8 +820,41 @@ def _handle_agent(args: argparse.Namespace) -> None:
         cfg.save()
         print(f"Deleted agent: {args.name}")
 
+    elif action == "reset-model":
+        _agent_reset_model(args)
+
     else:
-        print("Usage: kirocrew agent {list|create|update|delete}")
+        print("Usage: kirocrew agent {list|create|update|delete|reset-model}")
+
+
+def _agent_reset_model(args: argparse.Namespace) -> None:
+    """Clear an agent spec's pinned model (``kirocrew agent reset-model``).
+
+    The explicit, narrow way back to the shipped default model. It exists
+    because ownership of a spec's ``model`` cannot be inferred: a value an older
+    build's propagation wrote and one the user typed in by hand are
+    byte-identical on disk, so nothing may reclassify a pin behind the user's
+    back. Before this, the only ways out were the dashboard's Agent Templates
+    editor (clear the model) and ``kirocrew setup --clean``, which also
+    regenerates the whole spec and discards every other customization with it.
+    """
+    from kiro_crew.agent import reset_agent_model
+
+    name = getattr(args, "agent", None) or "kirocrew"
+    try:
+        spec_path, previous = reset_agent_model(name)
+    except FileNotFoundError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"❌ Could not write the agent spec: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if previous:
+        print(f"✅ Cleared {name}'s pinned model ({previous}) in {spec_path}")
+    else:
+        print(f"✅ {name} had no pinned model in {spec_path}")
+    print("   It now tracks the shipped default; restart the gateway to apply.")
 
 
 def _cron(args: argparse.Namespace) -> None:
