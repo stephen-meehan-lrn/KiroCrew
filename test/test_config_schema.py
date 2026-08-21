@@ -606,6 +606,7 @@ class TestFieldTypeResolution:
         ("slack.reactions", "object"),
         ("slack.trusted_bot_ids", "array"),
         ("agent.subagent_cwd_allowed_roots", "array"),
+        ("agent.extra_path_dirs", "array"),
         ("memory.semantic_keys", "array"),
         ("slack_channels", "object"),
         ("session.timeout_secs", "integer"),

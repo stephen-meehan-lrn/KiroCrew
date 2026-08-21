@@ -1692,6 +1692,20 @@ class AgentConfig:
             "Values support ~ expansion. Empty list disables cwd overrides.",
         ),
     )
+    extra_path_dirs: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Extra PATH Directories",
+            "Additional directories to search for MCP server binaries, for "
+            "installs outside the built-in list (~/.deno/bin, ~/.bun/bin, "
+            "~/go/bin, a corporate install root). Values support ~ expansion and "
+            "must be absolute. Applies to MCP server resolution only, not to the "
+            "agent's own shell commands or the harness. Searched AFTER the "
+            "inherited PATH, so an entry can only resolve a command that resolves "
+            "nowhere else -- it can never shadow a system binary. Empty list is a "
+            "no-op. Takes effect on gateway restart.",
+        ),
+    )
     max_channels: int = field(
         default=1,
         metadata=_meta("Max Channels", "Maximum concurrent agent channels (1-5)."),
@@ -6275,6 +6289,16 @@ class KiroCrewConfig:
                     [r for r in _roots if isinstance(r, str)]
                     if isinstance(_roots := agent_data.get("subagent_cwd_allowed_roots"), list)
                     else list(DEFAULT_CWD_ALLOWED_ROOTS)
+                ),
+                # Empty on anything malformed, NOT a built-in fallback: unlike
+                # subagent_cwd_allowed_roots this key has no shipped default, so
+                # the safe reading of a broken value is "the user declared
+                # nothing" — which leaves resolution exactly as it was before the
+                # key existed.
+                extra_path_dirs=(
+                    [d for d in _extra_dirs if isinstance(d, str)]
+                    if isinstance(_extra_dirs := agent_data.get("extra_path_dirs"), list)
+                    else []
                 ),
                 log_level=(
                     lvl.upper()

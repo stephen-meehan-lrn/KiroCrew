@@ -191,6 +191,105 @@ def _validated_bin_dir(val: str) -> str | None:
     return val
 
 
+def _raw_extra_path_dirs() -> list:
+    """Read ``agent.extra_path_dirs`` from disk without loading the whole config.
+
+    Deliberately NOT ``KiroCrewConfig.load()``. That call validates the entire
+    document against the JSON schema, builds the full dataclass tree, and can
+    perform a write-back migration — and :func:`spec_env_path` is reached from
+    the asynchronous MCP probe, so a schema validation and a possible config
+    WRITE would land on the gateway event loop. This reads the one key: two
+    small reads and a ``json.loads``, no validation, no write.
+
+    Honours the ``config.local.json`` overlay with the same precedence
+    ``KiroCrewConfig.load()`` gives it (local wins), so the two spellings of
+    the key cannot disagree.
+    """
+    # Function-local because a module-level import would close a real cycle:
+    # config.loader imports mcp_gateway.rewriter (loader.py:117), which imports
+    # this module for spec_env_path/spec_path_key (rewriter.py:40). env must stay
+    # importable below loader.
+    from kiro_crew.config.loader import config_local_path, config_path
+
+    value: list = []
+    for path in (config_path(), config_local_path()):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        agent = raw.get("agent")
+        if isinstance(agent, dict) and isinstance(found := agent.get("extra_path_dirs"), list):
+            value = found
+    return value
+
+
+@functools.lru_cache(maxsize=4)
+def _configured_extra_path_dirs(home: str) -> tuple[str, ...]:
+    """User-declared MCP binary directories from ``agent.extra_path_dirs``.
+
+    ``_EXTRA_PATH_DIRS`` is a fixed list, so a gateway that does not inherit a
+    login shell's ``PATH`` cannot resolve an MCP binary installed anywhere else
+    (``~/.deno/bin``, ``~/.bun/bin``, ``~/go/bin``, a corporate-managed install
+    root). This is the supported escape hatch. Consumed only by
+    :func:`spec_env_path` — see the comment there for why not
+    :func:`augmented_path`.
+
+    Deliberately CONFIG-FILE ONLY, with no environment-variable equivalent: an
+    env var is readable and writable by any lower-trust parent process, whereas
+    the config file is at least covered by the file-edit gate. For the same
+    reason entries expand ``~`` but NOT ``$VAR`` — ``expandvars`` would reopen
+    the env-var route through the back door.
+
+    Entries are validated, never probed: :func:`_validated_bin_dir` rejects
+    relative, empty, ``NUL``-bearing, and separator-smuggling values, but a
+    directory that does not exist is left on the search path rather than
+    stat-ed away. That matches ``subagent_cwd_allowed_roots`` (also never
+    probed on load) and keeps resolution free of per-entry I/O.
+
+    Read once per process and cached, the same discipline
+    :func:`_node_all_bin_dirs` already applies to the filesystem glob inside
+    :func:`augmented_path`: an edit is not visible until the gateway restarts.
+    That is not a compromise — an already-spawned child keeps the ``PATH`` it
+    was given regardless. Call ``_configured_extra_path_dirs.cache_clear()`` to
+    re-read without a restart.
+    """
+    try:
+        raw = _raw_extra_path_dirs()
+    except Exception:
+        # A missing, unreadable, or invalid config must not make an MCP binary
+        # unresolvable that resolved before this feature existed — fall back to
+        # the built-in list alone.
+        logger.debug("agent.extra_path_dirs unavailable; using built-in dirs only", exc_info=True)
+        return ()
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        candidate = entry.strip()
+        if candidate == "~":
+            candidate = home
+        elif candidate.startswith("~"):
+            candidate = os.path.join(home, candidate[1:].lstrip("/\\"))
+        validated = _validated_bin_dir(os.path.normpath(candidate) if candidate else "")
+        if validated is None:
+            logger.warning(
+                "agent.extra_path_dirs: ignoring %r — entries must be a single "
+                "absolute directory (~ is expanded; $VAR is not)",
+                entry,
+            )
+            continue
+        key = os.path.normcase(validated)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(validated)
+    return tuple(out)
+
+
 def _marker_node_bin_dir() -> str | None:
     """Read the node bin dir recorded by ``ensure-node.sh``, or ``None``."""
     try:
@@ -489,6 +588,10 @@ def augmented_path(base_path: str = "") -> str:
     agent's own ``python``/``pip`` shell calls) to the gateway's venv
     interpreter. As a pure fallback it resolves only names found nowhere
     else — exactly the console-script-wrapper case.
+
+    A user extends the search with ``agent.extra_path_dirs``
+    (:func:`_configured_extra_path_dirs`), whose entries land after
+    *base_path* — see the comment at the append site for why last.
     """
     home = os.path.expanduser("~")
     mise_data = mise_data_dir(home)
@@ -506,6 +609,34 @@ def augmented_path(base_path: str = "") -> str:
     parts = extra + ([base_path] if base_path else [])
     parts.append(str(Path(sys.executable).parent))
     return os.pathsep.join(parts)
+
+
+#: How many directories :func:`describe_search_path` names before truncating.
+#: The effective search path can carry a bin dir per installed Node version, and
+#: an unbounded dump would push the actionable first entries out of a log
+#: reader's view.
+_SEARCH_PATH_REPORT_LIMIT = 40
+
+
+def describe_search_path(path: str) -> str:
+    """Render *path* as a human-readable list of searched directories.
+
+    ``command not found: <name>`` never said WHERE it looked, so a user could
+    not tell "your install directory is not on the built-in list" (fixable with
+    ``agent.extra_path_dirs``) from "your binary is not installed" (fixable by
+    installing it) without reading the source. Every caller formats the search
+    path through here so the two failures read differently everywhere they are
+    reported.
+
+    Truncated at :data:`_SEARCH_PATH_REPORT_LIMIT`; the count is always stated,
+    so a truncated tail is visible rather than silent.
+    """
+    dirs = [d for d in path.split(os.pathsep) if d]
+    if not dirs:
+        return "searched no directories (empty PATH)"
+    shown = dirs[:_SEARCH_PATH_REPORT_LIMIT]
+    suffix = f" (+{len(dirs) - len(shown)} more)" if len(dirs) > len(shown) else ""
+    return f"searched {len(dirs)} directories: {', '.join(shown)}{suffix}"
 
 
 def dedup_path(path: str) -> str:
@@ -613,6 +744,30 @@ def spec_env_path(env_path: str) -> str:
         logger.debug("ignoring non-string MCP spec PATH: %s", type(env_path).__name__)
         env_path = ""
     parts = [*_spec_path_entries(env_path), augmented_path(os.environ.get("PATH", ""))]
+    # ``agent.extra_path_dirs`` is appended HERE and not inside
+    # :func:`augmented_path`, deliberately. That function is the search path for
+    # things other than an MCP server: ``kiro_cli.find_kiro_cli_candidates``
+    # locates the ACP HARNESS through it, and acp/client, acp/runtime,
+    # browser_cli and the agents handler build child environments from it. A
+    # config key added so an MCP server binary can be found has no business
+    # deciding which harness executable runs -- the config file is writable
+    # outside the file-edit gate, so feeding harness selection from it would let
+    # a planted binary be chosen as the harness. Appending at this level keeps
+    # the key to MCP spec resolution only, which is the whole of what #3030
+    # asks for: the dashboard probe (mcp_discovery), the agent config rebuild's
+    # command resolver (agent.py), and the gateway rewriter all route here.
+    #
+    # Scoped this way the key grants no capability the config file did not
+    # already have: a writer who can add this key can equally add an
+    # ``mcpServers`` entry naming an absolute command.
+    #
+    # LAST, so the entries rank below the spec's own PATH, the inherited PATH
+    # and the built-in list. The reported gap is that the binary resolves
+    # NOWHERE, so last place already closes it, and this makes the change a
+    # strict addition: no command name that resolves today can be rebound, and a
+    # user-writable directory cannot shadow a system binary. Granting override
+    # precedence is a separate trust decision this key does not settle.
+    parts.extend(_configured_extra_path_dirs(os.path.expanduser("~")))
     return dedup_path(os.pathsep.join(filter(None, parts)))
 
 
@@ -766,6 +921,22 @@ def emit_env(env: dict) -> dict:
     """
     key = spec_path_key(env)
     if key is None:
+        # No declared PATH: normally emit nothing, so the child inherits a usable
+        # PATH and the config stays portable. But once ``agent.extra_path_dirs``
+        # is set, the probe (mcp_discovery, which sets PATH unconditionally) and
+        # the command resolver both search directories the child does NOT
+        # inherit. A wrapper resolved out of one of them would be launched by
+        # absolute path and then fail to find its own interpreter or sibling in
+        # that same directory -- server starts, dies, probe still green: exactly
+        # the divergence this function exists to close, and exactly the shape
+        # #3030 reports (a vendor installer dropping wrappers in its own dir).
+        # So when the key is set, emit the search path the resolver actually
+        # used. Strictly opt-in: with no configured dirs this is byte-identical
+        # to returning the env untouched.
+        if _configured_extra_path_dirs(os.path.expanduser("~")):
+            out = dict(env)
+            out["PATH"] = spec_env_path("")
+            return out
         return dict(env)
     path = env[key]
     if not isinstance(path, str):
