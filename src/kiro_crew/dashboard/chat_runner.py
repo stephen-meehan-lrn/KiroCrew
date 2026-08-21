@@ -182,6 +182,7 @@ from kiro_crew.messaging.link import SLACK_NAMESPACE, telemetry_channel_of
 from kiro_crew.messaging.renderer import chunk_text
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.name_grant import name_grant_refusal, pin_human_approval
 from kiro_crew.platform import redact_via_context
 from kiro_crew.providers.acp import is_claude_backend
 from kiro_crew.providers.base import (
@@ -5883,6 +5884,28 @@ async def _run_chat(
                         if _tp_check_title is not None
                         else None
                     )
+                    if matched and _tp_cmd:
+                        # The user granted a PROGRAM NAME. Do not honour it when
+                        # that name no longer identifies the program it appears
+                        # to name — the shell resolves it again, through a PATH
+                        # that can lead with directories the agent writes.
+                        # Declining costs one interactive prompt; the command is
+                        # neither blocked nor rewritten.
+                        _tp_shim = name_grant_refusal(_tp_cmd)
+                        if _tp_shim:
+                            # The CODE, not the detail and not the pattern: both
+                            # are derived from user/agent input, and a log sink is
+                            # where that becomes a disclosure. The detail still
+                            # reaches the person, on the card below.
+                            logger.warning("trusted pattern not applied: %s", _tp_shim.log_text)
+                            slot.append(
+                                "system",
+                                "🛡️ Trusted pattern not applied — "
+                                f"{_redact_display_text(_tp_shim.detail)}. "
+                                "Approve this command explicitly.",
+                                "msg msg-info",
+                            )
+                            matched = None
                     if matched:
                         try:
                             validated_tool = _validate_tool_name(
@@ -6024,7 +6047,7 @@ async def _run_chat(
                     and cmd
                     and not _child_low_fidelity
                 ):
-                    if is_read_only_bash(cmd):
+                    if is_read_only_bash(cmd) and name_grant_refusal(cmd) is None:
                         try:
                             validated_tool = _validate_tool_name(
                                 event.title, is_shell=event.is_shell
@@ -6438,6 +6461,15 @@ async def _run_chat(
                         )
                     else:
                         await client.approve_tool(event.request_id)
+                        # A human just said yes to THIS command, so the files its
+                        # program names resolve to are the files their decision
+                        # was about. Recording them here is what later lets a
+                        # grant naming a non-system program (`gh`, `node`) be
+                        # honoured -- and why a file planted before any approval
+                        # cannot vouch for itself. Only ever on a real human
+                        # answer, never from an auto-approve path.
+                        if cmd:
+                            pin_human_approval(cmd)
                         _approved_title = _redact_display_text(event.title)
                         slot.append(
                             "tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event)

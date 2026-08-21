@@ -751,6 +751,34 @@ class HookManager:
                     return ToolHookResult.deny_policy(gov_reason)
                 return ToolHookResult.auto_approve()
 
+        # A NAME-based auto-approve is a statement about a PROGRAM, and the shell
+        # resolves the name itself afterwards through a `PATH` that legitimately
+        # leads with directories the agent can write. Before either shell tier
+        # below (the operator's `auto_approve_tools` globs and the read-only
+        # allowlist), require the names in the command to still identify the
+        # programs they appear to name; a shadowed or agent-tree resolution falls
+        # through to interactive approval instead. This never blocks and never
+        # rewrites the command -- it only declines to skip the prompt.
+        #
+        # Placed HERE, above both tiers, so neither can be reached on a name the
+        # check refuses. Function-local import for the same reason the read-only
+        # import below is: `slack.gateway` imports this module at boot.
+        if is_shell and command:
+            from kiro_crew.name_grant import name_grant_refusal
+
+            shim_reason = name_grant_refusal(command)
+            if shim_reason:
+                # `log_text`, never `detail`: the detail is built from the command
+                # line and from resolved paths, and a resolved path discloses more
+                # than the caller supplied. `log_text` is a constant read out of a
+                # table in that module.
+                logger.warning(
+                    "declining a name-based auto-approve: %s; the request falls "
+                    "through to interactive approval",
+                    shim_reason.log_text,
+                )
+                return ToolHookResult.allow()
+
         # Auto-approve — match against both the original title (preserves
         # "Running: "/"Reading " prefixes) and the normalized name (stripped)
         # so that "Running: *" and bare tool-name patterns both work.
