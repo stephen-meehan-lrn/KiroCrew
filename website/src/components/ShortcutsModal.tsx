@@ -73,7 +73,12 @@ export function ShortcutRow({ label, keys }: { label: string; keys: string[] }) 
   return (
     <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
       <span className="text-[13px] text-text">{label}</span>
-      <span className="flex items-center gap-1">{keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}</span>
+      {/* Key caps are key IDENTIFIERS (Alt, ⇧, A…Z), not prose — the render
+          scanner already exempts <kbd>, but its run walk joins INLINE children
+          into the parent's text run, so a <span> container re-leaks the cap
+          text at the row level. A block-level container ends the run, and
+          data-i18n-opaque (the scanner's own escape hatch) skips the subtree. */}
+      <div data-i18n-opaque className="flex items-center gap-1">{keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}</div>
     </div>
   )
 }

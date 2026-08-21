@@ -2344,7 +2344,8 @@
       "switch_to_local": "Switch to Local",
       "switch_to_remote_crew": "Switch to remote crew {{n}}",
       "walk_back_mru_history": "Walk back MRU history",
-      "stop_speaking": "Stop speaking"
+      "stop_speaking": "Stop speaking",
+      "jump_to_chat_letters": "Jump to chat 10 and beyond (letters follow the badge shown on each row)"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",

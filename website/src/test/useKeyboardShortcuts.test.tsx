@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, act } from '@testing-library/react'
-import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES, orderSlotsBySidebar, useDigitModifierHeld } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES, orderSlotsBySidebar, useDigitModifierHeld, jumpLetters, jumpLabelFor, jumpIndexForCode } from '../hooks/useKeyboardShortcuts'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
@@ -759,6 +759,124 @@ describe('chat jump + cycle follow the sidebar display order', () => {
     // slot-1 is the LAST displayed row; stepping forward wraps to the top row.
     fireEvent.keyDown(document, { code: 'ArrowRight', altKey: true })
     expect(store.getState().chat.activeSlot).toBe('slot-3')
+  })
+})
+
+describe('letter jumps reach sessions 10+', () => {
+  const manySlots = Array.from({ length: 12 }, (_, i) => ({
+    key: `slot-${i + 1}`, title: `S${i + 1}`, messages: 0, running: false,
+  }))
+  const order = manySlots.map(s => s.key)
+
+  function setupMany() {
+    const chatInitial = chatReducer(undefined, { type: '@@test/init' })
+    const dashInitial = dashboardReducer(undefined, { type: '@@test/init' })
+    const store = createTestStore({
+      dashboard: { ...dashInitial, slots: manySlots, sidebarOrder: order } as RootState['dashboard'],
+      chat: { ...chatInitial, activeSlot: null, slotHistory: [] } as RootState['chat'],
+    })
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn() }),
+      { store },
+    )
+    return store
+  }
+
+  it('the letter sequence skips every letter another chord owns', () => {
+    const letters = jumpLetters()
+    for (const reserved of ['c', 'g', 'k', 'n', 'p', 's']) {
+      expect(letters).not.toContain(reserved)
+    }
+    // First letters after the exclusions: a, b, then d (c is panel nav).
+    expect(letters.slice(0, 3)).toEqual(['a', 'b', 'd'])
+    expect(jumpLabelFor(8)).toBe('9')
+    expect(jumpLabelFor(9)).toBe('a')
+    expect(jumpLabelFor(11)).toBe('d')
+    expect(jumpLabelFor(9 + letters.length)).toBeNull()
+    expect(jumpIndexForCode('KeyA')).toBe(9)
+    expect(jumpIndexForCode('KeyC')).toBe(-1)
+    expect(jumpIndexForCode('Digit1')).toBe(0)
+  })
+
+  it('Alt+A picks the 10th displayed row', () => {
+    const store = setupMany()
+    fireEvent.keyDown(document, { code: 'KeyA', altKey: true })
+    expect(store.getState().chat.activeSlot).toBe('slot-10')
+  })
+
+  it('Alt+D picks the 12th displayed row (letter sequence skips excluded c)', () => {
+    const store = setupMany()
+    fireEvent.keyDown(document, { code: 'KeyD', altKey: true })
+    expect(store.getState().chat.activeSlot).toBe('slot-12')
+  })
+
+  it('letter jumps fire even while focus is in an input on non-Mac (session switch autofocuses the composer — chained jumps must survive it)', () => {
+    // jsdom has IS_MAC=false (same convention as the Ctrl+digit gating test
+    // above): this pins the Windows/Linux behavior. On macOS legacy Option
+    // mode the (!isInput || !IS_MAC) guard keeps letters input-gated, because
+    // Option+letter composes characters (Option+A = å).
+    const store = setupMany()
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    try {
+      textarea.focus()
+      fireEvent.keyDown(textarea, { code: 'KeyA', altKey: true, bubbles: true })
+      // 'a' is the first letter target (index 9) — the 10th displayed row.
+      expect(store.getState().chat.activeSlot).toBe('slot-10')
+    } finally {
+      textarea.remove()
+    }
+  })
+
+  it('letter jumps never fire from inside an embedded terminal (Alt+B/F are readline word motions on the shell line)', () => {
+    const store = setupMany()
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    const helper = document.createElement('textarea')
+    term.appendChild(helper)
+    document.body.appendChild(term)
+    try {
+      helper.focus()
+      fireEvent.keyDown(helper, { code: 'KeyB', altKey: true, bubbles: true })
+      expect(store.getState().chat.activeSlot).toBeNull()
+    } finally {
+      term.remove()
+    }
+  })
+
+  it('an excluded letter falls through to its owning chord (Alt+C = panel nav, no jump)', () => {
+    const store = setupMany()
+    fireEvent.keyDown(document, { code: 'KeyC', altKey: true })
+    // Panel navigation handled it (navigate mock); no session switch happened.
+    expect(store.getState().chat.activeSlot).toBeNull()
+  })
+
+  it('an UNMAPPED letter is not claimed — no preventDefault, so the browser keeps its own Alt+letter chords', () => {
+    // Only 3 sessions: every letter (index 9+) is beyond the session list.
+    const chatInitial = chatReducer(undefined, { type: '@@test/init' })
+    const dashInitial = dashboardReducer(undefined, { type: '@@test/init' })
+    const few = manySlots.slice(0, 3)
+    const store = createTestStore({
+      dashboard: { ...dashInitial, slots: few, sidebarOrder: few.map(s => s.key) } as RootState['dashboard'],
+      chat: { ...chatInitial, activeSlot: null, slotHistory: [] } as RootState['chat'],
+    })
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn() }),
+      { store },
+    )
+    // Alt+D would be the 12th row — unmapped with 3 sessions. The event must
+    // NOT be claimed (preventDefault not called): on Windows/Linux Alt+D
+    // focuses the browser address bar, and swallowing it would kill a chord
+    // the browser owns while jumping nowhere.
+    const event = new KeyboardEvent('keydown', { code: 'KeyD', altKey: true, cancelable: true, bubbles: true })
+    const claimed = !document.dispatchEvent(event)
+    expect(claimed).toBe(false)
+    expect(store.getState().chat.activeSlot).toBeNull()
+    // A mapped digit in the same store IS still claimed (pre-existing behavior).
+    const digitEvent = new KeyboardEvent('keydown', { code: 'Digit2', altKey: true, cancelable: true, bubbles: true })
+    const digitClaimed = !document.dispatchEvent(digitEvent)
+    expect(digitClaimed).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
   })
 })
 

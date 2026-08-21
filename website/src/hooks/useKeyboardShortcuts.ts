@@ -139,6 +139,9 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   { id: 'chat-7', key: '7', alt: !IS_MAC, ctrl: IS_MAC, n: 7, group: 'chat-navigation' },
   { id: 'chat-8', key: '8', alt: !IS_MAC, ctrl: IS_MAC, n: 8, group: 'chat-navigation' },
   { id: 'chat-9', key: '9', alt: !IS_MAC, ctrl: IS_MAC, n: 9, group: 'chat-navigation' },
+  // Sessions 10+ get letters (a–z minus letters other chords own — see
+  // jumpLetters). One summarizing modal row instead of ~20 near-identical ones.
+  { id: 'chat-letters', key: 'a…z', alt: !IS_MAC, ctrl: IS_MAC, group: 'chat-navigation' },
   { id: 'chat-prev', key: 'ArrowLeft', alt: true, group: 'chat-navigation' },
   { id: 'chat-next', key: 'ArrowRight', alt: true, group: 'chat-navigation' },
   { id: 'chat-prev-bracket', key: '[', meta: true, group: 'chat-navigation' },
@@ -215,6 +218,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'chat-7': 'hooks.useKeyboardShortcuts.jump_to_chat',
   'chat-8': 'hooks.useKeyboardShortcuts.jump_to_chat',
   'chat-9': 'hooks.useKeyboardShortcuts.jump_to_chat',
+  'chat-letters': 'hooks.useKeyboardShortcuts.jump_to_chat_letters',
   'chat-prev': 'hooks.useKeyboardShortcuts.previous_chat',
   'chat-next': 'hooks.useKeyboardShortcuts.next_chat',
   'chat-prev-bracket': 'hooks.useKeyboardShortcuts.previous_chat',
@@ -339,6 +343,53 @@ export const RESERVED_PANEL_CODES: ReadonlySet<string> = new Set<string>([
   'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
   'Digit6', 'Digit7', 'Digit8', 'Digit9', // chat jump
 ])
+
+/**
+ * Letters usable for chat-jumps 10+ (digit 1–9 stay digits; the 10th session
+ * onward gets a letter). a–z minus every letter another unshifted chord owns,
+ * so a jump letter can never shadow an existing shortcut:
+ *  - c/n/p/s — core panel navigation (CORE_PANEL_MAP)
+ *  - k       — shortcuts modal (Alt+K)
+ *  - g       — agent monitor (Ctrl+G is literal Ctrl on EVERY platform, so it
+ *              collides with the Mac Ctrl-jump mode; excluded uniformly rather
+ *              than per-platform so the same session always shows the same
+ *              letter on every OS)
+ *  - runtime — any code a downstream edition registered via
+ *              registerPanelShortcut (EXTRA_PANEL_ROUTES); registration
+ *              happens at module init, before any keypress or badge render,
+ *              and panels always win over jump letters.
+ * Computed per call (not a constant) so the runtime exclusions are honored.
+ */
+const JUMP_LETTER_STATIC_EXCLUDE = new Set(['c', 'g', 'k', 'n', 'p', 's'])
+export function jumpLetters(): string[] {
+  const out: string[] = []
+  for (let i = 0; i < 26; i++) {
+    const ch = String.fromCharCode(97 + i)
+    if (JUMP_LETTER_STATIC_EXCLUDE.has(ch)) continue
+    if (('Key' + ch.toUpperCase()) in EXTRA_PANEL_ROUTES) continue
+    out.push(ch)
+  }
+  return out
+}
+
+/** Jump target index (0-based) for a key code: Digit1–9 → 0–8, letters → 9+.
+ *  -1 when the code is not a jump chord (excluded letter, other key). */
+export function jumpIndexForCode(code: string): number {
+  if (code >= 'Digit1' && code <= 'Digit9') return parseInt(code.charAt(5)) - 1
+  if (code.startsWith('Key')) {
+    const li = jumpLetters().indexOf(code.slice(3).toLowerCase())
+    return li >= 0 ? 9 + li : -1
+  }
+  return -1
+}
+
+/** Badge label for the Nth (0-based) jump target: '1'–'9' then the letter
+ *  sequence; null past the addressable range. */
+export function jumpLabelFor(index: number): string | null {
+  if (index < 0) return null
+  if (index < 9) return String(index + 1)
+  return jumpLetters()[index - 9] ?? null
+}
 
 /** Map a KeyboardEvent.code to the display key the shortcuts modal shows. */
 function _displayKeyForCode(code: string): string {
@@ -575,16 +626,29 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // existed (tests with partial preloaded state).
     const orderedSlots = orderSlotsBySidebar(slots, sidebarOrder)
 
-    // On Mac (when Ctrl+digit mode enabled), Ctrl+digit switches chats.
+    // On Mac (when Ctrl+digit mode enabled), Ctrl+digit switches chats —
+    // Ctrl+letter reaches sessions 10+ (see jumpLetters for the exclusions;
+    // Ctrl+G stays the agent monitor). Letters are input-gated: Ctrl+A/E/K
+    // etc. are readline bindings inside text fields on macOS, so a letter
+    // jump never fires while typing. Digits keep firing in inputs (no
+    // text-editing meaning, and that has been the behavior since #4727).
     // Check for that first, before the Alt-based gate.
     const code = e.code
-    if (ctrlDigits && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey
-        && code >= 'Digit1' && code <= 'Digit9') {
-      if (!enabled || disabled) return
-      const idx = parseInt(code.charAt(5)) - 1
-      e.preventDefault()
-      if (idx < orderedSlots.length) { dispatch(switchSlot(orderedSlots[idx].key)); navigate('/chat') }
-      return
+    if (ctrlDigits && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      const jumpIdx = jumpIndexForCode(code)
+      // A LETTER is claimed only when it currently maps to a session
+      // (jumpIdx < orderedSlots.length): browsers own Alt/Ctrl+letter chords
+      // of their own (Ctrl+E address bar, etc.), so an unmapped letter must
+      // fall through to the browser instead of being swallowed as a no-op.
+      // Digits keep their pre-existing always-claim behavior — they collide
+      // with nothing and swallowing a dead digit avoids surprise typing.
+      const mapped = jumpIdx >= 0 && jumpIdx < orderedSlots.length
+      if (jumpIdx >= 0 && (jumpIdx < 9 || (!isInput && mapped))) {
+        if (!enabled || disabled) return
+        e.preventDefault()
+        if (mapped) { dispatch(switchSlot(orderedSlots[jumpIdx].key)); navigate('/chat') }
+        return
+      }
     }
 
     // Settings — ⌘+, on macOS, Alt+, on Windows/Linux (see isSettingsChord for
@@ -733,12 +797,35 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       return
     }
 
-    // Alt+1-9: Jump to chat N (when NOT in Ctrl+digit mode)
-    if (!ctrlDigits && code >= 'Digit1' && code <= 'Digit9' && !e.shiftKey) {
-      const idx = parseInt(code.charAt(5)) - 1
-      e.preventDefault()
-      if (idx < orderedSlots.length) { dispatch(switchSlot(orderedSlots[idx].key)); navigate('/chat') }
-      return
+    // Alt+1-9 / Alt+letter: Jump to chat N (when NOT in Ctrl+digit mode).
+    // Letters cover sessions 10+; an excluded letter (c/g/k/n/p/s or a
+    // downstream-registered panel code) returns -1 here and falls through to
+    // its owning branch — panels always win over jump letters. On Windows and
+    // Linux, letters fire even while focus is in a text field, exactly like
+    // digits: switching sessions autofocuses the composer, so an input gate
+    // here killed every CHAINED jump (jump → composer steals focus → next
+    // letter dead), and Alt+letter types no character on those platforms. On
+    // macOS (this branch = legacy Option mode) letters stay input-gated:
+    // Option+letter COMPOSES characters (Option+A = å, dead-key accents), so
+    // a mapped letter firing mid-typing would eat the typed character and
+    // yank the session — same protection the Ctrl branch keeps for readline.
+    if (!ctrlDigits && !e.shiftKey) {
+      const jumpIdx = jumpIndexForCode(code)
+      // Same letter claim rule as the Mac Ctrl branch: a letter is claimed
+      // only when it maps to a session, so unmapped letters (Alt+D address
+      // bar, Alt+F/E browser menus on Windows/Linux) fall through to the
+      // browser instead of being swallowed as dead no-ops.
+      const mapped = jumpIdx >= 0 && jumpIdx < orderedSlots.length
+      // Terminals are excluded even on non-Mac: Alt+B/F are readline word
+      // motions on the shell command line (xterm's helper textarea satisfied
+      // the old isInput gate, so this exclusion preserves, not adds, the
+      // shipped terminal behavior). The composer chained-jump fix above is
+      // about ordinary text fields, never the PTY.
+      if (jumpIdx >= 0 && (jumpIdx < 9 || (mapped && (!isInput || !IS_MAC) && !isTerminalTarget(e.target)))) {
+        e.preventDefault()
+        if (mapped) { dispatch(switchSlot(orderedSlots[jumpIdx].key)); navigate('/chat') }
+        return
+      }
     }
 
     // Alt+←/→: Previous/next chat (skip when in text input to preserve word-jump)
