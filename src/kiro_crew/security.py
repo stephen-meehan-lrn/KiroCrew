@@ -42,7 +42,7 @@ from kiro_crew.vector_memory_constants import _contains_injection
 # off the lightweight import path.
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -3444,6 +3444,128 @@ def _substitution_bodies(text: str) -> "list[str]":
     return bodies
 
 
+def _here_string_payload(raw: str) -> "str | None":
+    """The operand of a HERE-STRING (``<<<WORD``), ``""`` when the word is the next token.
+
+    ``None`` when this is not a here-string.  A here-string feeds its operand to stdin
+    verbatim, so for a stdin-reading interpreter that operand IS the program.
+
+    Kept distinct from :func:`_heredoc_marker` because ``<<<`` also starts with ``<<``:
+    reading it as a heredoc turned the payload into a DELIMITER and dropped it from the
+    search entirely, so ``python - <<<'import kiro_crew'`` went unmatched (caught in
+    review, GPT 5.6).
+    """
+    if not raw.startswith("<<<"):
+        return None
+    return raw[3:]
+
+
+def _heredoc_marker(raw: str) -> "str | None":
+    """The delimiter TAG of a heredoc redirect token.
+
+    Returns the tag for the attached spellings (``<<PY``, ``<<-PY``), ``""`` for a
+    bare ``<<`` whose tag is the NEXT token, and ``None`` when this is not a heredoc --
+    including a here-string (``<<<``), which is :func:`_here_string_payload`'s and must
+    not be mistaken for a heredoc whose tag happens to start with ``<``.
+
+    Read off the RAW token deliberately: ``_normalize_operand`` strips a redirection
+    down to the empty string, which is why the heredoc branch in
+    :func:`_python_reads_stdin` was unreachable -- a bare ``python << 'PY' … PY`` was
+    misread as running a SCRIPT named by the first word of the body (#2660).  Shared
+    by the stdin DETECTOR and the program-text SCOPE so the two cannot disagree about
+    where a heredoc body starts and ends.
+    """
+    if not raw.startswith("<<") or raw.startswith("<<<"):
+        return None
+    return raw[3:] if raw.startswith("<<-") else raw[2:]
+
+
+def _stdin_program_text(tokens: list[str], i: int) -> "Iterator[str]":
+    """The tokens that can carry the PROGRAM a stdin-reading ``python`` will run.
+
+    ``tokens[i]`` is an interpreter that reads its program from stdin.  The shell can
+    fill that stdin from exactly three places visible on the command line, and this
+    yields those and nothing else:
+
+    * a heredoc BODY -- the tokens between a ``<<TAG`` marker and the matching ``TAG``;
+    * a HERE-STRING operand -- ``python - <<<'…'`` hands the word itself to stdin;
+    * a stdin REDIRECT target -- the file whose CONTENT becomes the program, attached
+      (``python -<prog.py``) or separate (``python - < prog.py``);
+    * a PIPE PRODUCER -- the tokens left of this interpreter, when a pipe feeds it.
+      The pipe is NOT reliably its own token: the tokenizer splits on whitespace only,
+      so ``echo '…'|python -`` glues the operator into a neighbouring word and
+      ``_program_basename`` resolves the program from the LAST control-operator
+      segment.  So the pipe is detected as a CHARACTER anywhere left of, or glued
+      into, the interpreter token, and that token's own leading segment is producer
+      text.  Requiring a standalone ``|`` token missed all four no-space spellings and
+      let the producer's payload through (caught in review, GPT 5.6).  Any pipe to the
+      left qualifies the whole left side, which over-yields for ``a | b; python -`` --
+      the safe direction, since a missed producer is a bypass while an extra token is
+      only an over-block (pinned by a test).
+
+    Everything else in the frame is another command's argv.  Scanning THAT was the
+    defect (#2660): a frame is not split on a newline, so an unrelated neighbour that
+    merely names this package in a FILE PATH (``isort src/kiro_crew/mcp_core.py``
+    followed by any ``python - <<'PY' … PY``) made a harmless heredoc read as a
+    credential mint -- with no ``token`` word anywhere in the command.
+
+    Yields lazily so the caller's ``any()`` short-circuits: the cost stays O(frame)
+    per interpreter token, the same bound the frame-wide scan had.
+    """
+    # A PIPE PRODUCER writes this interpreter's stdin, so its argv IS program text.
+    glued_head, pipe_glued, _ = tokens[i].strip(_SHELL_WRAPPER_CHARS).rpartition("|")
+    if pipe_glued or any("|" in t for t in tokens[:i]):
+        yield from tokens[:i]
+        if pipe_glued:
+            yield glued_head
+    heredoc_tag: str | None = None
+    expect_tag = False
+    expect_redirect_target = False
+    for tok in tokens[i + 1 :]:
+        raw = tok.strip(_SHELL_WRAPPER_CHARS)
+        if heredoc_tag is not None:
+            # Inside the body: every token up to the closing tag is the program itself.
+            # An UNTERMINATED heredoc runs to the end of the frame, which over-yields
+            # rather than under-yields.
+            if raw == heredoc_tag:
+                heredoc_tag = None
+            else:
+                yield tok
+            continue
+        if expect_tag:
+            expect_tag = False
+            heredoc_tag = raw
+            continue
+        if expect_redirect_target:
+            expect_redirect_target = False
+            yield tok
+            continue
+        here = _here_string_payload(raw)
+        if here is not None:
+            # A HERE-STRING's operand IS the program. Checked before the heredoc branch,
+            # which would otherwise read `<<<payload` as a tag and drop the payload.
+            if here:
+                yield here
+            else:
+                expect_redirect_target = True  # a bare `<<<` puts its word next
+            continue
+        marker = _heredoc_marker(raw)
+        if marker is not None:
+            # Checked before the plain-redirect branch below, which would otherwise
+            # read the first `<` of `<<` as a stdin redirect.
+            if marker:
+                heredoc_tag = marker
+            else:
+                expect_tag = True
+            continue
+        if "<" in raw:
+            target = raw.rsplit("<", 1)[1]
+            if target:
+                yield target
+            else:
+                expect_redirect_target = True
+
+
 def _has_self_importing_inline_program(tokens: list[str], i: int) -> bool:
     """True if ``tokens[i]`` is an interpreter given a ``-c`` payload that imports this package.
 
@@ -3461,22 +3583,22 @@ def _has_self_importing_inline_program(tokens: list[str], i: int) -> bool:
     The STDIN forms are the same escape without an operand: ``python -`` (and a bare ``python``
     with no script) read the program from stdin, so a ``python - <<'PY' … PY`` heredoc or an
     ``echo '…' | python -`` pipe reaches the CLI with the payload nowhere in argv. When that
-    program text is visible on the command line — a heredoc body or the left side of a pipe,
-    both of which land as later tokens in this frame — matching the import is the same
-    fail-closed decision as for ``-c``. When it is NOT visible (a file redirect, a bare
-    ``python -`` fed by an unseen producer) there is nothing to match and the gate cannot see
-    it; that residual is noted, not silently claimed as covered.
+    program text is visible on the command line, matching the import is the same fail-closed
+    decision as for ``-c`` — but it is matched only in the tokens that actually CARRY that
+    program (see :func:`_stdin_program_text`), not anywhere in the frame. When it is NOT
+    visible (a bare ``python -`` fed by an unseen producer) there is nothing to match and the
+    gate cannot see it; that residual is noted, not silently claimed as covered.
     """
     if not _PYTHON_PROGRAM_RE.match(_program_basename(tokens[i])):
         return False
     later_tokens = tokens[i + 1 :]
-    # STDIN program: the whole FRAME is the search space, because the program text is not an
-    # operand of this interpreter — it arrives on stdin, which the shell fills from a heredoc
-    # body (later tokens) or a pipe producer (EARLIER tokens, e.g. `echo '…' | python -`). So a
-    # per-position scan is wrong here; match the import anywhere in the frame. `_python_reads_stdin`
-    # is precise so this does not fire for `python script.py`, `python -c …`, or `python -m …`.
+    # STDIN program: the text is not an operand of this interpreter — the shell fills stdin from
+    # a heredoc body, a redirected file, or a pipe producer — so the search space is those
+    # carriers rather than this position's operands. `_python_reads_stdin` is precise so this
+    # does not fire for `python script.py`, `python -c …`, or `python -m …`.
     if _python_reads_stdin(later_tokens) and any(
-        _inline_payload_reaches_cli(t.strip(_SHELL_WRAPPER_CHARS)) for t in tokens
+        _inline_payload_reaches_cli(t.strip(_SHELL_WRAPPER_CHARS))
+        for t in _stdin_program_text(tokens, i)
     ):
         return True
     expect_payload = False
@@ -3526,23 +3648,47 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
     ``-`` argument; ``-c CODE``, ``-m MOD``, and ``FILE`` all supply the program elsewhere.
     Walks the argument stream the way ``_is_self_module_invocation`` does so the corner cases
     line up: an operand-taking flag consumes its value (``-X dev`` — ``dev`` is not a script),
-    a heredoc redirect (``<<`` and the delimiter tag that follows it) is not an argument, and a
+    a heredoc (the ``<<TAG`` marker, its BODY and the closing tag) is not an argument, and a
     pipe/redirect token ends this command's own arguments.
+
+    The heredoc structure is read off the RAW token via :func:`_heredoc_marker`, because
+    ``_normalize_operand`` strips a redirection to the empty string — which made the heredoc
+    branch here unreachable and had ``python << 'PY' … PY`` (no ``-``) report FALSE, reading
+    the first word of the BODY as a script path (#2660).
     """
     skip_next = False
-    heredoc_tag_next = False
+    heredoc_tag: str | None = None
+    expect_tag = False
     for tok in later_tokens:
+        raw = tok.strip(_SHELL_WRAPPER_CHARS)
+        if heredoc_tag is not None:
+            # The body is program text on stdin, not an argument: skip to the closing tag.
+            if raw == heredoc_tag:
+                heredoc_tag = None
+            continue
+        if expect_tag:
+            expect_tag = False
+            heredoc_tag = raw
+            continue
+        here = _here_string_payload(raw)
+        if here is not None:
+            # A here-string supplies the program on stdin exactly as a heredoc does; its
+            # operand is a redirect word, never this interpreter's positional.
+            if not here:
+                skip_next = True  # a bare `<<<` puts its word in the next token
+            continue
+        marker = _heredoc_marker(raw)
+        if marker is not None:
+            if marker:
+                heredoc_tag = marker
+            else:
+                expect_tag = True  # a bare `<<` splits its tag into the next token
+            continue
         norm = _normalize_operand(tok).strip("\"'")
-        if heredoc_tag_next:
-            heredoc_tag_next = False
-            continue  # the heredoc delimiter word (`<< 'PY'` → the `PY`)
         if skip_next:
             skip_next = False
             continue  # value consumed by an operand-taking flag (`-X dev`)
         if not norm:
-            continue
-        if norm.startswith("<<"):
-            heredoc_tag_next = norm == "<<"  # a bare `<<` splits its tag into the next token
             continue
         if norm.startswith("<") or norm.startswith("|"):
             break  # a redirect/pipe boundary ends this command's argument list

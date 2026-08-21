@@ -1121,14 +1121,27 @@ defense-in-depth on top of it, not the boundary. Two tests pin both halves: the 
 are denied, and the `chr()`/two-step forms are the acknowledged gap.
 The STDIN forms are the same escape with no operand at all: `python -` and a bare interpreter
 read the program from stdin, so `python - <<'PY' … PY` and `echo '…' | python -` reach the CLI
-with the payload nowhere in argv. When that program text is visible on the command line — a
-heredoc body (later tokens) or a pipe producer (earlier tokens) — the import is matched across
-the whole frame and denied; when it is not (a file redirect, a bare `python -` fed by an unseen
-producer) there is nothing to match and the residual is noted rather than claimed as covered.
-`_python_reads_stdin` is precise (it consumes operand-flags and heredoc tags) so `python
-script.py`, `python -c …`, and `cat kiro_crew_notes.txt | python -` do not trip it, and the
-inline-program scan bails at the interpreter's first positional so the ReDoS-resistance budget
-still holds on spam input. Found in review (GPT 5.6).
+with the payload nowhere in argv. When that program text is visible on the command line the
+import is matched in the tokens that actually CARRY it — a heredoc body, a here-string operand
+(`python - <<<'…'`, whose word IS the program), a stdin-redirect target (the file whose content
+becomes the program), or a pipe producer — and nowhere else in the frame.
+Scanning the whole frame was a false-positive source: a frame is not split on a newline, so a
+neighbouring command naming the package in a FILE PATH (`isort src/kiro_crew/mcp_core.py`
+followed by any harmless heredoc) read as a mint with no `token` word present (#2660). The pipe
+is detected as a CHARACTER left of or glued into the interpreter token, not as a standalone `|`
+word: the tokenizer splits on whitespace only, so `echo '…'|python -` hands the operator over
+glued to a neighbour and `_program_basename` resolves the program from the last control-operator
+segment. Any pipe to the left qualifies the whole left side — a deliberate over-block, since a
+missed producer is a bypass while an extra token is a visible refusal. When the program text is
+NOT on the command line (a bare `python -` fed by an unseen producer, or a file written earlier
+and then redirected in) there is nothing to match and the residual is noted rather than claimed
+as covered — the same residual the written-then-run script form already has.
+`_python_reads_stdin` is precise (it consumes operand-flags and skips a heredoc's marker, body
+and closing tag, and a here-string's operand, read off the raw token because the operand
+normaliser strips a redirection to the empty string) so `python script.py`, `python -c …`, and
+`cat kiro_crew_notes.txt | python -`
+do not trip it, and the inline-program scan bails at the interpreter's first positional so the
+ReDoS-resistance budget still holds on spam input. Found in review (GPT 5.6).
 
 **There is deliberately NO migration from `config.json`, and adding one is the trap.** An
 interim revision had `migrate_from_config_if_needed`: on first read, if no keystone file
