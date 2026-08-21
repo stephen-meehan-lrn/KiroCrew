@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -3351,13 +3352,23 @@ class TestAutoApplyUpdateVenvPath:
         with patch("kiro_crew.env.is_toolbox_install", return_value=False):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
                 with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                    with patch.object(
-                        GatewayOrchestrator, "_is_brazil_install", return_value=False
-                    ):
-                        with patch("kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock):
-                            with patch("os.execv", side_effect=OSError("test")):
-                                with patch("shutil.which", return_value=None):
-                                    await orch._auto_apply_update()
+                    with patch(
+                        "kiro_crew.dep_sync.sync_or_reinstall", return_value=0
+                    ) as mock_install:
+                        with patch.object(
+                            GatewayOrchestrator, "_is_brazil_install", return_value=False
+                        ):
+                            with patch("kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock):
+                                with patch("os.execv", side_effect=OSError("test")):
+                                    with patch("shutil.which", return_value=None):
+                                        await orch._auto_apply_update()
+
+        # The install runs through the shared entry point, which picks a reinstall
+        # or a dependency-only sync — the gateway is normally started through the
+        # console script pip would have to rewrite.
+        assert mock_install.call_count == 1
+        assert str(mock_install.call_args[0][0]) == str(Path("/tmp/proj"))
+        assert str(mock_install.call_args[0][1]) == sys.executable
 
         ds.push_update_progress.assert_any_call("pulling", "Fetching latest changes…")
         ds.push_update_progress.assert_any_call("building", "Building frontend…")
@@ -3776,17 +3787,68 @@ class TestAutoApplyUpdateResetPath:
 
         with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
             with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
-                with patch(
-                    "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
-                ) as mock_build:
-                    with patch("os.execv", side_effect=OSError("test")):
-                        with patch("shutil.which", return_value=None):
-                            await orch._auto_apply_update()
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=0):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async", new_callable=AsyncMock
+                    ) as mock_build:
+                        with patch("os.execv", side_effect=OSError("test")):
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
 
         # Frontend build+stage runs, and the package is reinstalled.
         mock_build.assert_awaited()
         ds.push_update_progress.assert_any_call("building", "Building frontend…")
         ds.push_update_progress.assert_any_call("building", "Rebuilding package…")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_install_with_a_failed_repair_does_not_restart(self):
+        """Restarting into unsatisfied dependencies would kill the gateway.
+
+        The reset already moved the tree to the new revision. If neither the
+        dependency install nor the core-dep repair succeeded, the process this
+        restart brings up is a revision whose dependencies are known to be
+        missing — it dies at import. Staying up on already-imported modules
+        leaves the operator a working gateway to finish the install from.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        call_count = [0]
+
+        async def _fake_exec(*args, **kwargs):
+            call_count[0] += 1
+            proc = AsyncMock()
+            proc.kill = MagicMock()
+            if call_count[0] == 1:
+                proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
+                proc.returncode = 0
+            elif call_count[0] == 3:
+                proc.returncode = 1  # diff --quiet -> there are changes
+            else:
+                # Everything else, INCLUDING the core-dep repair, fails.
+                proc.communicate = AsyncMock(return_value=(b"", b"boom"))
+                proc.returncode = 0 if call_count[0] in (2, 4, 5) else 1
+            proc.wait = AsyncMock(return_value=proc.returncode)
+            return proc
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                with patch("kiro_crew.dep_sync.sync_or_reinstall", return_value=1):
+                    with patch(
+                        "kiro_crew.slack.gateway.build_frontend_async",
+                        new_callable=AsyncMock,
+                    ):
+                        with patch("os.execv") as mock_execv:
+                            with patch("shutil.which", return_value=None):
+                                await orch._auto_apply_update()
+
+        mock_execv.assert_not_called()
+        orch.sessions.close_all.assert_not_called()
+        steps = [c.args[0] for c in ds.push_update_progress.call_args_list]
+        assert "error" in steps
+        assert "restarting" not in steps
 
 
 # ═══════════════════════════════════════════════════════════════════════════

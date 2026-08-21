@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -55,106 +56,97 @@ def _track_errors(state):
 
 
 class TestVenvPipInstall:
-    """Tests for the _venv_pip_install helper."""
+    """Tests for the _venv_pip_install helper.
+
+    The helper no longer spawns pip itself — it hands the install to
+    ``dep_sync.sync_or_reinstall``, which picks an editable reinstall or a
+    dependency-only sync depending on whether the console script can be
+    rewritten. These stub that one seam, so they assert what this endpoint owns:
+    the exit code becomes a bool, and every message reaches the progress feed
+    redacted and capped.
+    """
 
     @pytest.mark.asyncio
     async def test_returns_true_on_success(self, monkeypatch, tmp_path) -> None:
         proj = _make_pip_proj(tmp_path)
+        from kiro_crew import dep_sync
         from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
+        seen: dict = {}
 
-        async def fake_exec(*args, **kwargs):
-            proc = MagicMock()
-            proc.communicate = AsyncMock(return_value=(b"", b""))
-            proc.returncode = 0
-            return proc
+        def fake_sync(repo, target_py, emit=None, timeout=None):
+            seen["repo"] = repo
+            seen["target"] = target_py
+            return 0
 
-        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(dep_sync, "sync_or_reinstall", fake_sync)
         assert await _venv_pip_install(str(proj), state) is True
+        # The venv written to is THIS gateway's own, and the checkout is the one
+        # the endpoint was asked to update — neither is re-derived downstream.
+        assert str(seen["repo"]) == str(proj)
+        assert str(seen["target"]) == sys.executable
 
     @pytest.mark.asyncio
     async def test_returns_false_on_nonzero_exit(self, monkeypatch, tmp_path) -> None:
         proj = _make_pip_proj(tmp_path)
+        from kiro_crew import dep_sync
         from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
 
-        async def fake_exec(*args, **kwargs):
-            proc = MagicMock()
-            proc.communicate = AsyncMock(
-                return_value=(b"", b"ERROR: could not find setup.py")
-            )
-            proc.returncode = 1
-            return proc
+        def fake_sync(repo, target_py, emit=None, timeout=None):
+            emit("dep-sync: pip install -e exited 1: ERROR: could not find setup.py", True)
+            return 1
 
-        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(dep_sync, "sync_or_reinstall", fake_sync)
         assert await _venv_pip_install(str(proj), state) is False
-        assert any("pip install failed" in e for e in errors), errors
+        assert any("could not find setup.py" in e for e in errors), errors
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_timeout(self, monkeypatch, tmp_path) -> None:
+    async def test_substitution_notice_is_progress_not_an_error(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A locked script is a route change, not a failure.
+
+        The substitute reports which wrapper was locked; pushing that as an error
+        would surface a red step on a sync that went on to succeed.
+        """
         proj = _make_pip_proj(tmp_path)
+        from kiro_crew import dep_sync
         from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
 
-        async def fake_exec(*args, **kwargs):
-            proc = MagicMock()
-            # First communicate raises TimeoutError; second (after kill) returns.
-            proc.communicate = AsyncMock(
-                side_effect=[asyncio.TimeoutError, (b"", b"")]
-            )
-            proc.kill = MagicMock()
-            proc.returncode = -9
-            return proc
+        def fake_sync(repo, target_py, emit=None, timeout=None):
+            emit(r"dep-sync: C:\v\kirocrew.exe locked; substituting", False)
+            return 0
 
-        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-        assert await _venv_pip_install(str(proj), state) is False
-        assert any("pip install timed out" in e for e in errors), errors
-
-    @pytest.mark.asyncio
-    async def test_timeout_swallows_process_lookup_error(self, monkeypatch, tmp_path) -> None:
-        """When the process is already gone, kill() raises ProcessLookupError — handled."""
-        proj = _make_pip_proj(tmp_path)
-        from kiro_crew.dashboard.handlers.updates import _venv_pip_install
-
-        state = _make_state(monkeypatch, tmp_path)
-        errors = _track_errors(state)
-
-        async def fake_exec(*args, **kwargs):
-            proc = MagicMock()
-            proc.communicate = AsyncMock(
-                side_effect=[asyncio.TimeoutError, (b"", b"")]
-            )
-            proc.kill = MagicMock(side_effect=ProcessLookupError)
-            proc.returncode = -9
-            return proc
-
-        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
-        assert await _venv_pip_install(str(proj), state) is False
-        assert any("pip install timed out" in e for e in errors), errors
+        monkeypatch.setattr(dep_sync, "sync_or_reinstall", fake_sync)
+        assert await _venv_pip_install(str(proj), state) is True
+        assert not errors, errors
 
     @pytest.mark.asyncio
     async def test_stderr_is_redacted(self, monkeypatch, tmp_path) -> None:
-        """Credentials and exfil URLs in pip stderr are redacted before display."""
+        """Credentials and exfil URLs in pip stderr are redacted before display.
+
+        dep_sync hands pip's captured text over RAW — it has no idea where its
+        caller publishes it — so redaction belongs here, at the publishing edge.
+        """
         proj = _make_pip_proj(tmp_path)
+        from kiro_crew import dep_sync
         from kiro_crew.dashboard.handlers.updates import _venv_pip_install
 
         state = _make_state(monkeypatch, tmp_path)
         errors = _track_errors(state)
 
-        async def fake_exec(*args, **kwargs):
-            proc = MagicMock()
-            proc.communicate = AsyncMock(
-                return_value=(b"", b"failed: AKIAIOSFODNN7EXAMPLE token leaked")
-            )
-            proc.returncode = 1
-            return proc
+        def fake_sync(repo, target_py, emit=None, timeout=None):
+            emit("failed: AKIAIOSFODNN7EXAMPLE token leaked", True)
+            return 1
 
-        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(dep_sync, "sync_or_reinstall", fake_sync)
         assert await _venv_pip_install(str(proj), state) is False
         # The raw AWS access key id should NOT appear verbatim in the error string.
         assert errors, "expected an error to be reported"
