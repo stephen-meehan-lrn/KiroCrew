@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -388,6 +389,42 @@ def _in_ephemeral_tree(path: Path, env: Mapping[str, str] | None = None) -> bool
     # `.mount_` is the AppImage runtime's own prefix, so this does not condemn
     # unrelated temp paths.
     return any(part.startswith(".mount_") for part in path.parts)
+
+
+def _under_system_tmp(path: Path) -> bool:
+    """Whether *path* lives under the system temp directory.
+
+    Ephemerality signal for the shared-agent-home guard
+    (``agent._decline_shared_agent_home``): a CHECKOUT under the temp root is
+    throwaway by construction — the OS reaps it on reboot, CI reaps it per job,
+    and the automation that clones a per-task scratch tree deletes it when the
+    task ends. A machine-wide agent spec stamped from such a checkout outlives
+    it and leaves every managed MCP server pointing at a launcher (and possibly
+    a pinned data home) that no longer exists (#4781).
+
+    Deliberately NOT folded into :func:`_in_ephemeral_tree`. That predicate
+    serves the launcher installer, which rejected a blanket temp-dir rule on
+    its own grounds (see its docstring): a dangling launcher is caught by the
+    interpreter being gone, and declining costs a legitimate temp install its
+    global command. The agent-home guard makes the opposite call because its
+    artifact is shared machine-wide and declining costs nothing durable — the
+    instance simply uses the specs that already worked. It does subtract the one
+    temp resident that is a durable install in disguise: an AppImage's runtime
+    mount, excluded at that call site via :func:`_in_ephemeral_tree`. This
+    predicate stays a plain "is it under the temp root" answer so each caller
+    keeps its own exemptions.
+
+    Compared on RESOLVED paths on both sides, so a symlinked temp root (macOS
+    ``/tmp`` -> ``/private/tmp``, ``/var/folders`` -> ``/private/var/folders``)
+    and a symlink into the tree land in the same namespace. Answers on the
+    temp root as configured AT CALL TIME (``tempfile.gettempdir()``), matching
+    how the rest of this module treats redirected environments.
+    """
+    try:
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+    except (OSError, ValueError):  # pragma: no cover - defensive: no usable tmp
+        return False
+    return path == tmp_root or tmp_root in path.parents
 
 
 def _in_linked_git_worktree(path: Path) -> bool:

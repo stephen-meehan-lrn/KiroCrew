@@ -132,6 +132,23 @@ def test_temp_dir_home_is_still_allowed():
     assert not _is_unsafe_home(Path(tempfile.gettempdir()).resolve())
 
 
+def test_under_system_tmp_answers_on_the_call_time_root():
+    """``_under_system_tmp`` covers the temp root and its subtrees, nothing else.
+
+    The DATA-home predicate above deliberately allows a temp-dir home; this
+    CHECKOUT predicate deliberately condemns a temp-dir checkout. Both answer
+    against ``tempfile.gettempdir()`` as configured at call time.
+    """
+    import tempfile
+
+    from kiro_crew.config.paths import _under_system_tmp
+
+    root = Path(tempfile.gettempdir()).resolve()
+    assert _under_system_tmp(root)
+    assert _under_system_tmp(root / "kc-task-1234" / "repo" / "src")
+    assert not _under_system_tmp(Path("/durable-install/KiroCrew").resolve())
+
+
 # --------------------------------------------------------------------------
 # The worktree decline guard
 # --------------------------------------------------------------------------
@@ -290,16 +307,105 @@ def test_global_kiro_home_in_a_worktree_still_declines(monkeypatch, tmp_path):
     ), "a globally exported KIRO_HOME bypassed the guard"
 
 
-def test_does_not_decline_from_an_ordinary_clone(monkeypatch, tmp_path):
+def test_declines_from_a_clone_under_the_temp_dir(monkeypatch, tmp_path):
+    """A throwaway clone under the system temp dir must not own the shared home.
+
+    The #4781 shape: automation clones the repo into a per-task temp directory,
+    something in that tree reaches ``rebuild_agent_config``, and the machine-wide
+    spec ends up naming a launcher venv (and possibly a pinned data home) that is
+    deleted when the task ends.
+
+    The clone is built under ``tempfile.gettempdir()`` — the root the predicate
+    answers against at call time — NOT under ``tmp_path``: pytest's basetemp is
+    created before the suite redirects the tempfile base, so ``tmp_path`` does
+    not live under the redirected root and would miss the arm under test.
+    """
+    import shutil
+    import tempfile
+
     from kiro_crew import agent
 
     monkeypatch.delenv("KIRO_HOME", raising=False)
-    # No isolated data home either: an ordinary install owns its shared specs.
     monkeypatch.delenv("KIROCREW_HOME", raising=False)
-    clone = tmp_path / "KiroCrew"
-    (clone / "src" / "kiro_crew").mkdir(parents=True)
-    (clone / ".git").mkdir()  # a DIRECTORY -> ordinary clone
-    monkeypatch.setattr(agent, "__file__", str(clone / "src" / "kiro_crew" / "agent.py"))
+    scratch = Path(tempfile.mkdtemp(prefix="kc-clone-"))
+    try:
+        clone = scratch / "repo"
+        (clone / "src" / "kiro_crew").mkdir(parents=True)
+        (clone / ".git").mkdir()  # a DIRECTORY -> ordinary clone, not a worktree
+        monkeypatch.setattr(agent, "__file__", str(clone / "src" / "kiro_crew" / "agent.py"))
+        _pretend_target_is_shared(monkeypatch, agent, tmp_path / "agents")
+
+        assert (
+            agent._decline_shared_agent_home() is not None
+        ), "a temp-dir clone was allowed to rewrite the shared agent home"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_does_not_decline_from_an_appimage_runtime_mount(monkeypatch, tmp_path):
+    """An AppImage lives under the temp root yet must keep writing its specs.
+
+    The runtime unpacks to ``/tmp/.mount_<name>XXXXXX`` and picks a NEW random
+    mount every launch, so the durable ``.AppImage`` behind it can only have
+    working managed servers by rewriting the spec on each start. Declining would
+    freeze the spec on a previous launch's mount and ENOENT every managed server
+    -- #4781's own symptom, manufactured on a shipped channel -- and on a fresh
+    install would leave no spec at all.
+    """
+    import shutil
+    import tempfile
+
+    from kiro_crew import agent
+
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
+    monkeypatch.delenv("APPDIR", raising=False)  # env-free child: `.mount_` is the signal
+    scratch = Path(tempfile.mkdtemp(prefix="kc-appimage-"))
+    try:
+        mount = scratch / ".mount_KiroXk3Qm9"
+        (mount / "usr" / "lib" / "kiro_crew").mkdir(parents=True)
+        monkeypatch.setattr(
+            agent, "__file__", str(mount / "usr" / "lib" / "kiro_crew" / "agent.py")
+        )
+        _pretend_target_is_shared(monkeypatch, agent, tmp_path / "agents")
+
+        assert agent._decline_shared_agent_home(audit=False) is None, (
+            "an AppImage runtime mount was refused the shared agent home, so its "
+            "managed servers would stay pinned to a stale mount path"
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_under_system_tmp_still_answers_yes_for_an_appimage_mount():
+    """The carve-out belongs to the CALLER, not to the predicate.
+
+    ``_under_system_tmp`` stays a plain "is it under the temp root" answer so a
+    second caller is not silently handed the agent-home guard's exemption.
+    """
+    import tempfile
+
+    from kiro_crew.config.paths import _in_ephemeral_tree, _under_system_tmp
+
+    mount = Path(tempfile.gettempdir()) / ".mount_KiroXk3Qm9" / "usr" / "lib"
+    assert _under_system_tmp(mount) is True
+    assert _in_ephemeral_tree(mount, env={}) is True
+
+
+def test_does_not_decline_from_a_durable_clone(monkeypatch, tmp_path):
+    """An ordinary install outside the temp dir still owns its shared specs.
+
+    The path is fabricated (never created) precisely because a real path a test
+    can create lives under the redirected temp root: the guard's predicates are
+    lexical on the resolved path, so existence is not required, and a
+    non-temp, non-worktree location is the durable-install shape.
+    """
+    from kiro_crew import agent
+
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
+    durable = Path("/durable-install/KiroCrew/src/kiro_crew/agent.py")
+    monkeypatch.setattr(agent, "__file__", str(durable))
     _pretend_target_is_shared(monkeypatch, agent, tmp_path / "agents")
 
     assert agent._decline_shared_agent_home() is None
@@ -372,10 +478,12 @@ def test_allowed_shared_home_write_is_audited(monkeypatch, tmp_path):
     monkeypatch.delenv("KIRO_HOME", raising=False)
     monkeypatch.delenv("KIROCREW_HOME", raising=False)
     monkeypatch.delenv("KIROCREW_POD", raising=False)
-    clone = tmp_path / "KiroCrew"
-    (clone / "src" / "kiro_crew").mkdir(parents=True)
-    (clone / ".git").mkdir()
-    monkeypatch.setattr(agent, "__file__", str(clone / "src" / "kiro_crew" / "agent.py"))
+    # Fabricated non-temp location: a clone created under tmp_path would now be
+    # (correctly) declined by the temp-dir arm, and this test is about the GRANT
+    # branch. The predicates are lexical on the resolved path, so the file need
+    # not exist.
+    durable = Path("/durable-install/KiroCrew/src/kiro_crew/agent.py")
+    monkeypatch.setattr(agent, "__file__", str(durable))
     _pretend_target_is_shared(monkeypatch, agent, tmp_path / "agents")
 
     assert agent._decline_shared_agent_home() is None
